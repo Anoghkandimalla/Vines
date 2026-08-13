@@ -1,16 +1,26 @@
-"""Parse Stripe's prose changelog (API upgrades page) into structured entries.
+"""Parse Stripe's prose changelog into structured entries.
 
 Stripe has no machine-readable changelog, so this extracts structure from the
-markdown-ish document: one `## <version>` heading per API version, with
-`### Breaking changes` / other subsections containing bullet entries.
+markdown document, in both formats Stripe has used:
+
+- table format (current, e.g. https://docs.stripe.com/changelog.md): one
+  `## <version>` heading per API version (dates, optionally suffixed like
+  `2026-07-29.dahlia`), with tables whose rows carry a linked title and an
+  explicit Breaking / Non-breaking column;
+- bullet format (older upgrade guides): `### Breaking changes` / other
+  subsections containing bullet entries.
 """
 import re
 
 from apiwatch.models import ChangeEntry
 
-_VERSION_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+_VERSION_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2}(?:\.\w+)?)\s*$", re.MULTILINE)
 _SECTION_RE = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
 _BULLET_RE = re.compile(r"^-\s+(.+?)(?=^-\s|\Z)", re.MULTILINE | re.DOTALL)
+_TABLE_ROW_RE = re.compile(
+    r"^\|\s*\[(?P<title>.+?)\]\((?P<url>[^)]+)\)\s*\|[^|]*\|\s*(?P<breaking>Breaking|Non-breaking)\s*\|",
+    re.MULTILINE,
+)
 _SYMBOL_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_.]*)`")
 
 
@@ -29,6 +39,19 @@ def parse_changelog(text: str, url: str = "") -> list[ChangeEntry]:
         version = vm.group(1)
         end = versions[i + 1].start() if i + 1 < len(versions) else len(text)
         body = text[vm.end():end]
+        for tm in _TABLE_ROW_RE.finditer(body):
+            title = " ".join(tm.group("title").split())
+            entries.append(
+                ChangeEntry(
+                    api="stripe",
+                    version=version,
+                    title=title[:80],
+                    description=title,
+                    breaking=tm.group("breaking") == "Breaking",
+                    symbols=extract_symbols(title),
+                    url=tm.group("url"),
+                )
+            )
         sections = list(_SECTION_RE.finditer(body))
         for j, sm in enumerate(sections):
             heading = sm.group(1)

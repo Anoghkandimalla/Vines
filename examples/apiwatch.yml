@@ -1,6 +1,6 @@
 # Drop this at the root of the repo you want watched.
 apis:
   - name: stripe
-    changelog: https://docs.stripe.com/upgrades
+    changelog: https://docs.stripe.com/changelog.md
 state_file: .apiwatch/state.json
 base_branch: main

@@ -36,3 +36,32 @@ def test_non_breaking_entries_flagged():
     other = [e for e in entries if e.version == "2022-11-15" and not e.breaking]
     assert len(other) == 1
     assert "Account" in other[0].symbols
+
+
+INDEX_FIXTURE = Path(__file__).parent / "fixtures" / "stripe_changelog_index.md"
+
+
+def test_parse_table_format_versions_including_suffixed():
+    entries = parse_changelog(INDEX_FIXTURE.read_text())
+    versions = {e.version for e in entries}
+    assert "2026-07-29.dahlia" in versions
+    assert "2022-11-15" in versions
+    assert "2022-08-01" in versions
+
+
+def test_parse_table_format_breaking_flag_from_column():
+    entries = parse_changelog(INDEX_FIXTURE.read_text())
+    dahlia = [e for e in entries if e.version == "2026-07-29.dahlia"]
+    assert dahlia and all(not e.breaking for e in dahlia)
+    v2211 = [e for e in entries if e.version == "2022-11-15"]
+    assert len(v2211) == 5 and all(e.breaking for e in v2211)
+
+
+def test_parse_table_format_charges_removal_entry():
+    entries = parse_changelog(INDEX_FIXTURE.read_text())
+    hits = [e for e in entries if "charges" in e.symbols and e.version == "2022-11-15"]
+    assert len(hits) == 1
+    e = hits[0]
+    assert e.breaking is True
+    assert "PaymentIntent" in e.symbols
+    assert e.url == "https://docs.stripe.com/changelog/2022-11-15/removes-charges-attribute-paymentintent.md"
