@@ -65,3 +65,43 @@ def test_parse_table_format_charges_removal_entry():
     assert e.breaking is True
     assert "PaymentIntent" in e.symbols
     assert e.url == "https://docs.stripe.com/changelog/2022-11-15/removes-charges-attribute-paymentintent.md"
+
+
+def test_enrich_change_fetches_detail_and_merges_symbols():
+    from apiwatch.models import ChangeEntry
+    from apiwatch.watcher.stripe import enrich_change
+
+    change = ChangeEntry(
+        api="stripe", version="2022-11-15",
+        title="Removes the `charges` attribute from the `PaymentIntent` object",
+        description="Removes the `charges` attribute from the `PaymentIntent` object",
+        breaking=True, symbols=("charges", "PaymentIntent"),
+        url="https://docs.stripe.com/changelog/2022-11-15/removes-charges-attribute-paymentintent.md",
+    )
+    detail = "# Detail\n\nUse the new `latest_charge` field, expandable via `expand`.\n"
+    enriched = enrich_change(change, fetch=lambda url: detail)
+    assert "latest_charge" in enriched.description
+    assert enriched.symbols[:2] == ("charges", "PaymentIntent")
+    assert "latest_charge" in enriched.symbols
+    assert enriched.version == change.version
+
+
+def test_enrich_change_fetch_failure_returns_unchanged():
+    from apiwatch.models import ChangeEntry
+    from apiwatch.watcher.stripe import enrich_change
+
+    def boom(url):
+        raise OSError("network down")
+
+    change = ChangeEntry("stripe", "2022-11-15", "t", "orig", True, ("charges",), "https://x/y.md")
+    assert enrich_change(change, fetch=boom).description == "orig"
+
+
+def test_enrich_change_non_md_url_skipped():
+    from apiwatch.models import ChangeEntry
+    from apiwatch.watcher.stripe import enrich_change
+
+    calls = []
+    change = ChangeEntry("stripe", "2022-11-15", "t", "orig", True, (), "https://x/upgrades#2022-11-15")
+    enrich_change(change, fetch=lambda url: calls.append(url) or "body")
+    assert calls == []
