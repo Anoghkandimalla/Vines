@@ -11,7 +11,7 @@ from apiwatch.patcher.pr import open_draft_pr
 from apiwatch.patcher.prompt import build_prompt
 from apiwatch.state import load_state, save_state
 from apiwatch.watcher.core import load_source, new_breaking_changes
-from apiwatch.watcher.stripe import parse_changelog
+from apiwatch.watcher.stripe import enrich_change, parse_changelog
 
 
 def _branch_exists_on_origin(repo: Path, branch: str) -> bool:
@@ -70,8 +70,9 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     proposed = 0
     newest = last
     per_version: dict[str, int] = {}
+    api_filter = name if cfg["require_api_mention"] else None
     for change in changes:
-        sites = scan_repo(repo, change.symbols)
+        sites = scan_repo(repo, change.symbols, api_name=api_filter)
         newest = max(newest, change.version)
         if not sites:
             print(f"[apiwatch] {name} {change.version}: breaking change does not affect this repo: {change.title}")
@@ -98,7 +99,9 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
         print(f"[apiwatch] {name} {change.version}: patching {len(sites)} call sites: {change.title}")
         allowed = sorted({s.file for s in sites})
         try:
-            run_agent(repo, build_prompt(change, sites), runner=runner)
+            # Enrichment fetches the entry's detail page for replacement
+            # guidance; sites and allowlist stay as mapped above.
+            run_agent(repo, build_prompt(enrich_change(change), sites), runner=runner)
             touched = _changed_files(repo, state_file)
             if not touched:
                 print(f"[apiwatch] agent produced no changes for {name} {change.version}; skipping PR")
