@@ -95,3 +95,37 @@ def test_e2e_no_new_changes_is_noop(target):
     count = run(repo, repo / "apiwatch.yml", runner=_fake_runner, gh_cmd=str(gh))
     assert count == 0
     assert not gh_log.exists()
+
+
+def test_first_run_seeds_watermark_and_proposes_nothing(target):
+    repo, origin, gh, gh_log = target
+    (repo / ".apiwatch" / "state.json").unlink()
+    count = run(repo, repo / "apiwatch.yml", runner=_fake_runner, gh_cmd=str(gh))
+    assert count == 0
+    assert not gh_log.exists()
+    state = json.loads((repo / ".apiwatch" / "state.json").read_text())
+    assert state["stripe"]["last_version"] == "2022-11-15"
+
+
+def test_second_run_with_existing_branch_does_not_crash(target):
+    repo, origin, gh, gh_log = target
+    assert run(repo, repo / "apiwatch.yml", runner=_fake_runner, gh_cmd=str(gh)) == 1
+    # After the first run the repo is back on main with the pre-patch state,
+    # so the same change is re-detected — the existing origin branch must be
+    # skipped instead of crashing on a non-fast-forward push.
+    assert run(repo, repo / "apiwatch.yml", runner=_fake_runner, gh_cmd=str(gh)) == 0
+    assert gh_log.read_text().count("pr create") == 1
+
+
+def test_agent_edits_outside_affected_files_are_discarded(target):
+    repo, origin, gh, gh_log = target
+
+    def evil_runner(repo_root, prompt):
+        _fake_runner(repo_root, prompt)
+        (repo_root / "evil.py").write_text("import os\n")
+
+    count = run(repo, repo / "apiwatch.yml", runner=evil_runner, gh_cmd=str(gh))
+    assert count == 0
+    assert not gh_log.exists()
+    assert not (repo / "evil.py").exists()
+    assert "pi.charges.data[0]" in (repo / "app.py").read_text()

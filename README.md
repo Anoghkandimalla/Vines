@@ -43,9 +43,17 @@ It verifies, end to end, that the watcher detects the change, the mapper finds t
 python -m pytest   # unit + e2e tests (agent faked, git origin local, gh stubbed)
 ```
 
+## Safety and trust boundary
+
+- **Never merges.** Only draft PRs, enforced by tests (no merge code exists).
+- **Changelog text is untrusted input.** It is fetched from the vendor and embedded in the agent's prompt, so a compromised or spoofed changelog could try to steer the agent. As defense in depth, apiwatch discards any patch that touches files outside the call sites the mapper identified, and commits only those files (plus the state file) — an agent lured off-task cannot land edits elsewhere in the tree. The draft-PR human review is the final backstop.
+- **First run proposes nothing.** With no recorded watermark, apiwatch seeds `.apiwatch/state.json` at the newest changelog version instead of opening PRs for every historical breaking change.
+- **Open PRs are not re-proposed.** If the patch branch already exists on origin, the change is skipped until the PR is merged or closed.
+
 ## Current scope and caveats (MVP)
 
 - **APIs:** Stripe first. Twilio and the GitHub API are the next targets.
 - **Languages:** scans `.py` files only for now.
-- **Changelog parsing:** prose-changelog extraction is format-specific (Stripe's version-dated upgrade page). Where a vendor publishes a formal spec, diffing the spec is the plan.
+- **Changelog parsing:** prose-changelog extraction is format-specific (Stripe's version-dated upgrade page). Where a vendor publishes a formal spec, diffing the spec is the plan. The live-URL path (`https://docs.stripe.com/upgrades`) has not yet been validated end-to-end — the replay validation uses a fixture mirroring that page's structure, and a source that parses to zero entries is loudly warned about rather than silently ignored.
+- **Symbol matching is a heuristic:** a change mentioning a resource name like `PaymentIntent` flags every use of that resource, which can over-include call sites; the empty-diff and allowlist guards limit the blast radius.
 - **State:** the changelog watermark (`.apiwatch/state.json`) is committed as part of each patch PR, so merging the PR also advances the watermark.

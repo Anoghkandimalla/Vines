@@ -22,12 +22,16 @@ def open_draft_pr(
     change: ChangeEntry,
     branch: str,
     base: str,
+    paths: list[str] | None = None,
     extra_paths: list[str] | None = None,
     gh_cmd: str = "gh",
 ) -> None:
     repo_root = Path(repo_root)
     _git(repo_root, "checkout", "-b", branch)
-    _git(repo_root, "add", "-A")
+    if paths:
+        _git(repo_root, "add", "--", *paths)
+    else:
+        _git(repo_root, "add", "-A")
     for p in extra_paths or []:
         _git(repo_root, "add", "-f", p)
     title = f"[apiwatch] {change.api} {change.version}: {change.title}"

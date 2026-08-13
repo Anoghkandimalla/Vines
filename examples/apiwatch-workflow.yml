@@ -19,6 +19,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install apiwatch
+        # Pin to a tag or commit for reproducibility once releases exist.
         run: pip install git+https://github.com/anoghkandimalla/vines.git
       - name: Install Claude Code (patch agent)
         run: npm install -g @anthropic-ai/claude-code

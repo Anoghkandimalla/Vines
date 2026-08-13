@@ -24,7 +24,7 @@ def scan_repo(
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix not in extensions:
             continue
-        if SKIP_DIRS & set(p.name for p in path.parents):
+        if SKIP_DIRS & set(path.relative_to(root).parts[:-1]):
             continue
         for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
             for sym, pat in patterns.items():

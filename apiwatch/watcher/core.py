@@ -25,6 +25,8 @@ def load_source(source: str) -> str:
 
 
 def new_breaking_changes(entries: list[ChangeEntry], last_version: str | None) -> list[ChangeEntry]:
+    # String comparison is correct while versions are ISO dates (Stripe pre-2023);
+    # revisit for suffixed versions like "2024-09-30.acacia".
     return [
         e for e in entries
         if e.breaking and (last_version is None or e.version > last_version)
