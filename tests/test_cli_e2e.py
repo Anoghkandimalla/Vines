@@ -129,3 +129,11 @@ def test_agent_edits_outside_affected_files_are_discarded(target):
     assert not gh_log.exists()
     assert not (repo / "evil.py").exists()
     assert "pi.charges.data[0]" in (repo / "app.py").read_text()
+
+
+def test_changes_with_too_many_call_sites_are_skipped(target):
+    repo, origin, gh, gh_log = target
+    count = run(repo, repo / "apiwatch.yml", runner=_fake_runner, gh_cmd=str(gh),
+                max_call_sites=1)
+    assert count == 0
+    assert not gh_log.exists()

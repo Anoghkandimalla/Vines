@@ -46,7 +46,7 @@ def _restore_tree(repo: Path, state_file: str) -> None:
 
 
 def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
-             dry_run: bool, runner, gh_cmd: str) -> int:
+             dry_run: bool, runner, gh_cmd: str, max_call_sites: int) -> int:
     name = api["name"]
     source = str(api["changelog"])
     state_file = cfg["state_file"]
@@ -75,6 +75,14 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
         newest = max(newest, change.version)
         if not sites:
             print(f"[apiwatch] {name} {change.version}: breaking change does not affect this repo: {change.title}")
+            continue
+        if len(sites) > max_call_sites:
+            # A generic symbol (e.g. a resource name that collides with the
+            # app's own domain models) can match huge swaths of the repo;
+            # patching that automatically would be reckless. Flag for a human.
+            print(f"[apiwatch] WARNING: {name} {change.version}: {len(sites)} call sites exceeds "
+                  f"max_call_sites={max_call_sites}; too broad to patch automatically, "
+                  f"review manually: {change.title} ({change.url})")
             continue
         per_version[change.version] = per_version.get(change.version, 0) + 1
         branch = f"apiwatch/{name}-{change.version}-{per_version[change.version]}"
@@ -116,16 +124,20 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     return proposed
 
 
-def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cmd: str = "gh") -> int:
+def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cmd: str = "gh",
+        max_call_sites: int | None = None) -> int:
     repo = Path(repo)
     cfg = load_config(config_path)
+    if max_call_sites is None:
+        max_call_sites = cfg["max_call_sites"]
     state_path = repo / cfg["state_file"]
     state = load_state(state_path)
     proposed = 0
     failed = []
     for api in cfg["apis"]:
         try:
-            proposed += _run_api(repo, cfg, api, state, state_path, dry_run, runner, gh_cmd)
+            proposed += _run_api(repo, cfg, api, state, state_path, dry_run, runner, gh_cmd,
+                                 max_call_sites)
         except Exception as exc:
             failed.append(api["name"])
             print(f"[apiwatch] ERROR: {api['name']}: {exc}")

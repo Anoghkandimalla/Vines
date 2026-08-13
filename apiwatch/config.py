@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-DEFAULTS = {"state_file": ".apiwatch/state.json", "base_branch": "main"}
+DEFAULTS = {"state_file": ".apiwatch/state.json", "base_branch": "main", "max_call_sites": 100}
 
 
 def load_config(path: Path) -> dict:
