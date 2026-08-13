@@ -78,11 +78,12 @@ def test_enrich_change_fetches_detail_and_merges_symbols():
         breaking=True, symbols=("charges", "PaymentIntent"),
         url="https://docs.stripe.com/changelog/2022-11-15/removes-charges-attribute-paymentintent.md",
     )
-    detail = "# Detail\n\nUse the new `latest_charge` field, expandable via `expand`.\n"
+    detail = "# Detail\n\nUse the new `latest_charge` field:\n\n    pi.latest_charge\n"
     enriched = enrich_change(change, fetch=lambda url: detail)
     assert "latest_charge" in enriched.description
-    assert enriched.symbols[:2] == ("charges", "PaymentIntent")
-    assert "latest_charge" in enriched.symbols
+    # line structure (code samples in the guidance) must survive
+    assert "\n\n    pi.latest_charge" in enriched.description
+    assert enriched.symbols == change.symbols
     assert enriched.version == change.version
 
 

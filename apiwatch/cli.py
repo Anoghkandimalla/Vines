@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from apiwatch.config import load_config
-from apiwatch.mapper import scan_repo
+from apiwatch.mapper import repo_mentions, scan_repo
 from apiwatch.patcher.agent import run_agent
 from apiwatch.patcher.pr import open_draft_pr
 from apiwatch.patcher.prompt import build_prompt
@@ -70,7 +70,13 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     proposed = 0
     newest = last
     per_version: dict[str, int] = {}
-    api_filter = name if cfg["require_api_mention"] else None
+    # The mention filter matches on `match` if configured, else the api name.
+    # A display-style name that appears in no source file would silently hide
+    # every real usage, so shout when the filter can never match.
+    api_filter = str(api.get("match", name)) if cfg["require_api_mention"] else None
+    if api_filter and changes and not repo_mentions(repo, api_filter):
+        print(f"[apiwatch] WARNING: {name}: no scanned file mentions '{api_filter}'; if this "
+              "repo uses the API under another name, set 'match:' for it in apiwatch.yml")
     for change in changes:
         sites = scan_repo(repo, change.symbols, api_name=api_filter)
         newest = max(newest, change.version)
@@ -100,8 +106,10 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
         allowed = sorted({s.file for s in sites})
         try:
             # Enrichment fetches the entry's detail page for replacement
-            # guidance; sites and allowlist stay as mapped above.
-            run_agent(repo, build_prompt(enrich_change(change), sites), runner=runner)
+            # guidance, feeding both the agent prompt and the PR body;
+            # sites and allowlist stay as mapped above.
+            change = enrich_change(change)
+            run_agent(repo, build_prompt(change, sites), runner=runner)
             touched = _changed_files(repo, state_file)
             if not touched:
                 print(f"[apiwatch] agent produced no changes for {name} {change.version}; skipping PR")

@@ -65,3 +65,11 @@ def test_only_secondary_symbols_falls_back(tmp_path):
     (tmp_path / "api.py").write_text("import stripe\npi = stripe.PaymentIntent.retrieve(x)\n")
     sites = scan_repo(tmp_path, ["PaymentIntent"])
     assert len(sites) == 1
+
+
+def test_repo_mentions(tmp_path):
+    from apiwatch.mapper import repo_mentions
+
+    (tmp_path / "a.py").write_text("import stripe\n")
+    assert repo_mentions(tmp_path, "stripe") is True
+    assert repo_mentions(tmp_path, "twilio") is False

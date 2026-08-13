@@ -19,6 +19,20 @@ def _is_primary(symbol: str) -> bool:
     return symbol.islower() or "_" in symbol
 
 
+def repo_mentions(root: Path, token: str, extensions: tuple[str, ...] = (".py",)) -> bool:
+    """True if any scanned file contains token (case-insensitive)."""
+    root = Path(root)
+    token = token.lower()
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in extensions:
+            continue
+        if SKIP_DIRS & set(path.relative_to(root).parts[:-1]):
+            continue
+        if token in path.read_text(errors="replace").lower():
+            return True
+    return False
+
+
 def scan_repo(
     root: Path,
     symbols: Sequence[str],

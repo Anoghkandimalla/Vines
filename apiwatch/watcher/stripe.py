@@ -37,11 +37,13 @@ _DETAIL_CAP = 4000
 
 
 def enrich_change(change, fetch=None):
-    """Fetch the entry's detail page for a fuller description and symbol set.
+    """Fetch the entry's detail page for a fuller description.
 
     Table-format changelog entries carry only their title; the linked .md
     detail page has the full prose (including replacement guidance the patch
-    agent needs). Failure-tolerant: any fetch problem returns the change as-is.
+    agent needs). Line structure is preserved so code samples in the guidance
+    stay readable. Failure-tolerant: any fetch problem returns the change
+    as-is, with a warning — the patch will be lower-quality without it.
     """
     if not change.url.endswith(".md"):
         return change
@@ -50,16 +52,15 @@ def enrich_change(change, fetch=None):
         fetch = load_source
     try:
         body = fetch(change.url)
-    except Exception:
+    except Exception as exc:
+        print(f"[apiwatch] WARNING: could not fetch change detail {change.url}: {exc}; "
+              "patching from the headline only")
         return change
-    description = " ".join(body.split())[:_DETAIL_CAP]
+    tidy = "\n".join(line.rstrip() for line in body.splitlines())
+    description = re.sub(r"\n{3,}", "\n\n", tidy).strip()[:_DETAIL_CAP]
     if not description:
         return change
-    merged = list(change.symbols)
-    for sym in extract_symbols(body):
-        if sym not in merged:
-            merged.append(sym)
-    return replace(change, description=description, symbols=tuple(merged))
+    return replace(change, description=description)
 
 
 def parse_changelog(text: str, url: str = "") -> list[ChangeEntry]:
