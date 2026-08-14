@@ -5,13 +5,13 @@ import sys
 from pathlib import Path
 
 from apiwatch.config import load_config
-from apiwatch.mapper import scan_repo
+from apiwatch.mapper import repo_mentions, scan_repo
 from apiwatch.patcher.agent import run_agent
 from apiwatch.patcher.pr import open_draft_pr
 from apiwatch.patcher.prompt import build_prompt
 from apiwatch.state import load_state, save_state
 from apiwatch.watcher.core import load_source, new_breaking_changes
-from apiwatch.watcher.stripe import parse_changelog
+from apiwatch.watcher.stripe import enrich_change, parse_changelog
 
 
 def _branch_exists_on_origin(repo: Path, branch: str) -> bool:
@@ -46,7 +46,7 @@ def _restore_tree(repo: Path, state_file: str) -> None:
 
 
 def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
-             dry_run: bool, runner, gh_cmd: str) -> int:
+             dry_run: bool, runner, gh_cmd: str, max_call_sites: int) -> int:
     name = api["name"]
     source = str(api["changelog"])
     state_file = cfg["state_file"]
@@ -70,11 +70,26 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     proposed = 0
     newest = last
     per_version: dict[str, int] = {}
+    # The mention filter matches on `match` if configured, else the api name.
+    # A display-style name that appears in no source file would silently hide
+    # every real usage, so shout when the filter can never match.
+    api_filter = str(api.get("match", name)) if cfg["require_api_mention"] else None
+    if api_filter and changes and not repo_mentions(repo, api_filter):
+        print(f"[apiwatch] WARNING: {name}: no scanned file mentions '{api_filter}'; if this "
+              "repo uses the API under another name, set 'match:' for it in apiwatch.yml")
     for change in changes:
-        sites = scan_repo(repo, change.symbols)
+        sites = scan_repo(repo, change.symbols, api_name=api_filter)
         newest = max(newest, change.version)
         if not sites:
             print(f"[apiwatch] {name} {change.version}: breaking change does not affect this repo: {change.title}")
+            continue
+        if len(sites) > max_call_sites:
+            # A generic symbol (e.g. a resource name that collides with the
+            # app's own domain models) can match huge swaths of the repo;
+            # patching that automatically would be reckless. Flag for a human.
+            print(f"[apiwatch] WARNING: {name} {change.version}: {len(sites)} call sites exceeds "
+                  f"max_call_sites={max_call_sites}; too broad to patch automatically, "
+                  f"review manually: {change.title} ({change.url})")
             continue
         per_version[change.version] = per_version.get(change.version, 0) + 1
         branch = f"apiwatch/{name}-{change.version}-{per_version[change.version]}"
@@ -90,6 +105,10 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
         print(f"[apiwatch] {name} {change.version}: patching {len(sites)} call sites: {change.title}")
         allowed = sorted({s.file for s in sites})
         try:
+            # Enrichment fetches the entry's detail page for replacement
+            # guidance, feeding both the agent prompt and the PR body;
+            # sites and allowlist stay as mapped above.
+            change = enrich_change(change)
             run_agent(repo, build_prompt(change, sites), runner=runner)
             touched = _changed_files(repo, state_file)
             if not touched:
@@ -116,16 +135,20 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     return proposed
 
 
-def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cmd: str = "gh") -> int:
+def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cmd: str = "gh",
+        max_call_sites: int | None = None) -> int:
     repo = Path(repo)
     cfg = load_config(config_path)
+    if max_call_sites is None:
+        max_call_sites = cfg["max_call_sites"]
     state_path = repo / cfg["state_file"]
     state = load_state(state_path)
     proposed = 0
     failed = []
     for api in cfg["apis"]:
         try:
-            proposed += _run_api(repo, cfg, api, state, state_path, dry_run, runner, gh_cmd)
+            proposed += _run_api(repo, cfg, api, state, state_path, dry_run, runner, gh_cmd,
+                                 max_call_sites)
         except Exception as exc:
             failed.append(api["name"])
             print(f"[apiwatch] ERROR: {api['name']}: {exc}")

@@ -1,16 +1,27 @@
-"""Parse Stripe's prose changelog (API upgrades page) into structured entries.
+"""Parse Stripe's prose changelog into structured entries.
 
 Stripe has no machine-readable changelog, so this extracts structure from the
-markdown-ish document: one `## <version>` heading per API version, with
-`### Breaking changes` / other subsections containing bullet entries.
+markdown document, in both formats Stripe has used:
+
+- table format (current, e.g. https://docs.stripe.com/changelog.md): one
+  `## <version>` heading per API version (dates, optionally suffixed like
+  `2026-07-29.dahlia`), with tables whose rows carry a linked title and an
+  explicit Breaking / Non-breaking column;
+- bullet format (older upgrade guides): `### Breaking changes` / other
+  subsections containing bullet entries.
 """
 import re
+from dataclasses import replace
 
 from apiwatch.models import ChangeEntry
 
-_VERSION_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+_VERSION_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2}(?:\.\w+)?)\s*$", re.MULTILINE)
 _SECTION_RE = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
 _BULLET_RE = re.compile(r"^-\s+(.+?)(?=^-\s|\Z)", re.MULTILINE | re.DOTALL)
+_TABLE_ROW_RE = re.compile(
+    r"^\|\s*\[(?P<title>.+?)\]\((?P<url>[^)]+)\)\s*\|[^|]*\|\s*(?P<breaking>Breaking|Non-breaking)\s*\|",
+    re.MULTILINE,
+)
 _SYMBOL_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_.]*)`")
 
 
@@ -22,6 +33,36 @@ def extract_symbols(text: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+_DETAIL_CAP = 4000
+
+
+def enrich_change(change, fetch=None):
+    """Fetch the entry's detail page for a fuller description.
+
+    Table-format changelog entries carry only their title; the linked .md
+    detail page has the full prose (including replacement guidance the patch
+    agent needs). Line structure is preserved so code samples in the guidance
+    stay readable. Failure-tolerant: any fetch problem returns the change
+    as-is, with a warning — the patch will be lower-quality without it.
+    """
+    if not change.url.endswith(".md"):
+        return change
+    if fetch is None:
+        from apiwatch.watcher.core import load_source
+        fetch = load_source
+    try:
+        body = fetch(change.url)
+    except Exception as exc:
+        print(f"[apiwatch] WARNING: could not fetch change detail {change.url}: {exc}; "
+              "patching from the headline only")
+        return change
+    tidy = "\n".join(line.rstrip() for line in body.splitlines())
+    description = re.sub(r"\n{3,}", "\n\n", tidy).strip()[:_DETAIL_CAP]
+    if not description:
+        return change
+    return replace(change, description=description)
+
+
 def parse_changelog(text: str, url: str = "") -> list[ChangeEntry]:
     entries: list[ChangeEntry] = []
     versions = list(_VERSION_RE.finditer(text))
@@ -29,6 +70,19 @@ def parse_changelog(text: str, url: str = "") -> list[ChangeEntry]:
         version = vm.group(1)
         end = versions[i + 1].start() if i + 1 < len(versions) else len(text)
         body = text[vm.end():end]
+        for tm in _TABLE_ROW_RE.finditer(body):
+            title = " ".join(tm.group("title").split())
+            entries.append(
+                ChangeEntry(
+                    api="stripe",
+                    version=version,
+                    title=title[:80],
+                    description=title,
+                    breaking=tm.group("breaking") == "Breaking",
+                    symbols=extract_symbols(title),
+                    url=tm.group("url"),
+                )
+            )
         sections = list(_SECTION_RE.finditer(body))
         for j, sm in enumerate(sections):
             heading = sm.group(1)

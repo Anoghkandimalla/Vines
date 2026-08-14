@@ -129,3 +129,31 @@ def test_agent_edits_outside_affected_files_are_discarded(target):
     assert not gh_log.exists()
     assert not (repo / "evil.py").exists()
     assert "pi.charges.data[0]" in (repo / "app.py").read_text()
+
+
+def test_changes_with_too_many_call_sites_are_skipped(target):
+    repo, origin, gh, gh_log = target
+    count = run(repo, repo / "apiwatch.yml", runner=_fake_runner, gh_cmd=str(gh),
+                max_call_sites=1)
+    assert count == 0
+    assert not gh_log.exists()
+
+
+def test_files_without_api_mention_are_excluded_from_patch_scope(target):
+    repo, origin, gh, gh_log = target
+    (repo / "own.py").write_text("charges = [1]\n")
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                    "add", "own.py"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "-m", "own"], check=True)
+    prompts = []
+
+    def capturing_runner(repo_root, prompt):
+        prompts.append(prompt)
+        _fake_runner(repo_root, prompt)
+
+    count = run(repo, repo / "apiwatch.yml", runner=capturing_runner, gh_cmd=str(gh))
+    assert count == 1
+    # own.py never mentions the watched API, so it must not be offered to the agent
+    assert "own.py" not in prompts[0]
+    assert "app.py" in prompts[0]
