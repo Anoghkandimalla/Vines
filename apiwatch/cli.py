@@ -68,8 +68,17 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
             save_state(state_path, state)
         return 0
     changes = new_breaking_changes(entries, last)
-    proposed = 0
     newest = last
+    if not api.get("include_preview", cfg["include_preview"]):
+        # Preview API versions (e.g. Stripe's `2026-07-29.preview`) only reach
+        # integrations that opt into them; the watermark still advances past them.
+        skipped = [c for c in changes if c.version.endswith(".preview")]
+        if skipped:
+            changes = [c for c in changes if not c.version.endswith(".preview")]
+            newest = max(newest, *(c.version for c in skipped))
+            print(f"[apiwatch] {name}: skipping {len(skipped)} preview-version breaking change(s); "
+                  "set include_preview: true to watch them")
+    proposed = 0
     per_version: dict[str, int] = {}
     # The mention filter matches on `match` if configured, else the api name.
     # A display-style name that appears in no source file would silently hide
@@ -79,6 +88,13 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
         print(f"[apiwatch] WARNING: {name}: no scanned file mentions '{api_filter}'; if this "
               "repo uses the API under another name, set 'match:' for it in apiwatch.yml")
     for change in changes:
+        # Enrichment fetches the entry's detail page for replacement guidance
+        # (for the agent prompt and PR body) and, when the headline names no
+        # fields, the symbols to map. Symbol-less changes need it before
+        # mapping; the rest only if they survive mapping, to keep fetches few.
+        enriched = False
+        if enrich_change is not None and not change.symbols:
+            change, enriched = enrich_change(change), True
         sites = scan_repo(repo, change.symbols, api_name=api_filter)
         newest = max(newest, change.version)
         if not sites:
@@ -106,10 +122,8 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
         print(f"[apiwatch] {name} {change.version}: patching {len(sites)} call sites: {change.title}")
         allowed = sorted({s.file for s in sites})
         try:
-            # Enrichment fetches the entry's detail page for replacement
-            # guidance, feeding both the agent prompt and the PR body;
-            # sites and allowlist stay as mapped above.
-            if enrich_change is not None:
+            # Sites and allowlist stay as mapped above.
+            if enrich_change is not None and not enriched:
                 change = enrich_change(change)
             run_agent(repo, build_prompt(change, sites), runner=runner)
             touched = _changed_files(repo, state_file)

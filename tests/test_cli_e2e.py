@@ -215,3 +215,49 @@ def test_unknown_format_fails_that_api(tmp_path):
     (repo / "apiwatch.yml").write_text(f"apis:\n  - name: acme\n    changelog: {FIXTURE}\n")
     with pytest.raises(RuntimeError, match="acme"):
         run(repo, repo / "apiwatch.yml", dry_run=True)
+
+
+def test_symbol_less_change_is_enriched_before_mapping(tmp_path, monkeypatch):
+    """Current Stripe titles name no fields; the detail page supplies them."""
+    index = tmp_path / "changelog.md"
+    index.write_text(
+        "## 2026-03-25.dahlia\n\n| Change | Products | Type |\n| --- | --- | --- |\n"
+        "| [Renames the tax IDs property to tax ID](https://docs.stripe.com/c/tax-ids.md)"
+        " | Checkout | Breaking |\n"
+    )
+    detail = ("#### REST API\n\n| Parameters | Change | Resources |\n| --- | --- | --- |\n"
+              "| `tax_ids` | Removed | [x](/y) |\n")
+    fetched = []
+    monkeypatch.setattr("apiwatch.watcher.core.load_source",
+                        lambda u: fetched.append(u) or detail if u.endswith("tax-ids.md")
+                        else open(u).read())
+    repo, origin, gh, gh_log = _make_target(
+        tmp_path,
+        "import stripe\ns = stripe.checkout.Session.retrieve(sid)\n"
+        "ids = s.collected_information.tax_ids\n",
+        f"apis:\n  - name: stripe\n    changelog: {index}\n",
+        {"stripe": {"last_version": "2025-09-30.clover"}},
+    )
+    assert run(repo, repo / "apiwatch.yml", dry_run=True) == 1
+    assert fetched == ["https://docs.stripe.com/c/tax-ids.md"]
+
+
+def test_preview_versions_skipped_but_watermark_advances(tmp_path):
+    index = tmp_path / "changelog.md"
+    index.write_text(
+        "## 2026-07-29.preview\n\n| Change | Products | Type |\n| --- | --- | --- |\n"
+        "| [Removes the `charges` attribute](https://x/y) | Payments | Breaking |\n"
+    )
+    repo, origin, gh, gh_log = _make_target(
+        tmp_path, "import stripe\ncharge = pi.charges.data[0]\n",
+        f"apis:\n  - name: stripe\n    changelog: {index}\n",
+        {"stripe": {"last_version": "2026-03-25.dahlia"}},
+    )
+    assert run(repo, repo / "apiwatch.yml") == 0
+    state = json.loads((repo / ".apiwatch" / "state.json").read_text())
+    assert state["stripe"]["last_version"] == "2026-07-29.preview"
+    (repo / "apiwatch.yml").write_text(
+        f"apis:\n  - name: stripe\n    changelog: {index}\n    include_preview: true\n")
+    (repo / ".apiwatch" / "state.json").write_text(
+        json.dumps({"stripe": {"last_version": "2026-03-25.dahlia"}}))
+    assert run(repo, repo / "apiwatch.yml", dry_run=True) == 1

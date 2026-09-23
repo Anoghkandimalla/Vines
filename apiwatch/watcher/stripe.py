@@ -34,6 +34,35 @@ def extract_symbols(text: str) -> tuple[str, ...]:
 
 
 _DETAIL_CAP = 4000
+_REST_SECTION_RE = re.compile(r"^####\s+REST API\s*$(.*?)(?=^#{2,4}\s|\Z)", re.MULTILINE | re.DOTALL)
+_CHANGE_ROW_RE = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*([A-Za-z ]+?)\s*\|", re.MULTILINE)
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def detail_symbols(body: str) -> tuple[str, ...]:
+    """Symbols a detail page says existing code may depend on.
+
+    Prefers the page's REST API "Changes" table, skipping `Added` rows so a
+    rename's new name (which already-migrated code uses) isn't evidence; a
+    dotted field (`SubscriptionItem.billed_until`) contributes its last part.
+    Without a table, falls back to the prose's backticked multi-word
+    snake_case names: prose also backticks enum values and common words
+    (`processing`, `never`, `price`) that would match unrelated code.
+    """
+    section = _REST_SECTION_RE.search(body)
+    seen: list[str] = []
+    if section:
+        for field, change in _CHANGE_ROW_RE.findall(section.group(1)):
+            name = field.split(".")[-1]
+            if change.strip().lower() != "added" and _IDENT_RE.match(name) and name not in seen:
+                seen.append(name)
+        if seen:
+            return tuple(seen)
+    for sym in extract_symbols(body):
+        name = sym.split(".")[-1]
+        if "_" in name and name.islower() and name not in seen:
+            seen.append(name)
+    return tuple(seen)
 
 
 def enrich_change(change, fetch=None):
@@ -41,7 +70,9 @@ def enrich_change(change, fetch=None):
 
     Table-format changelog entries carry only their title; the linked .md
     detail page has the full prose (including replacement guidance the patch
-    agent needs). Line structure is preserved so code samples in the guidance
+    agent needs). Current titles are plain prose naming no fields, so a
+    change without symbols takes them from the detail page (see
+    detail_symbols); symbols from the title are kept as-is. Line structure is preserved so code samples in the guidance
     stay readable. Failure-tolerant: any fetch problem returns the change
     as-is, with a warning — the patch will be lower-quality without it.
     """
@@ -60,7 +91,8 @@ def enrich_change(change, fetch=None):
     description = re.sub(r"\n{3,}", "\n\n", tidy).strip()[:_DETAIL_CAP]
     if not description:
         return change
-    return replace(change, description=description)
+    return replace(change, description=description,
+                   symbols=change.symbols or detail_symbols(body))
 
 
 def parse_changelog(text: str, url: str = "") -> list[ChangeEntry]:

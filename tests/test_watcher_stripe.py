@@ -106,3 +106,53 @@ def test_enrich_change_non_md_url_skipped():
     change = ChangeEntry("stripe", "2022-11-15", "t", "orig", True, (), "https://x/upgrades#2022-11-15")
     enrich_change(change, fetch=lambda url: calls.append(url) or "body")
     assert calls == []
+
+
+RENAME_DETAIL = """# Renames the tax IDs property to tax ID in Checkout Session collected information
+
+Previously, `collected_information.tax_ids` returned an array, or `null`.
+
+## Changes
+
+#### REST API
+
+| Parameters | Change | Resources or endpoints |
+| --- | --- | --- |
+| `tax_id` | Added | [Checkout.Session.collected_information](/api/x) |
+| `tax_ids` | Removed | [Checkout.Session.collected_information](/api/x) |
+
+#### Ruby
+
+| Parameters | Change | Resources or methods |
+| --- | --- | --- |
+| `taxIds` | Removed | [Checkout::Session](/api/x) |
+"""
+
+
+def test_detail_symbols_prefer_rest_table_and_skip_added():
+    from apiwatch.watcher.stripe import detail_symbols
+
+    assert detail_symbols(RENAME_DETAIL) == ("tax_ids",)
+    changed = "#### REST API\n\n| Field | Change | From |\n| --- | --- | --- |\n" \
+              "| `SubscriptionItem.billed_until` | Changed | `x` |\n"
+    assert detail_symbols(changed) == ("billed_until",)
+
+
+def test_detail_symbols_fallback_drops_literals():
+    from apiwatch.watcher.stripe import detail_symbols
+
+    assert detail_symbols("Returns `null` or a `boolean`; use `latest_charge`.") == ("latest_charge",)
+    prose = "Status becomes `processing` (see `payment_intent.processing`); set `never` or `requires_action`."
+    assert detail_symbols(prose) == ("requires_action",)
+
+
+def test_enrich_change_fills_symbols_only_when_title_had_none():
+    from apiwatch.models import ChangeEntry
+    from apiwatch.watcher.stripe import enrich_change
+
+    url = "https://docs.stripe.com/changelog/dahlia/2026-07-29/tax-ids-rename.md"
+    bare = ChangeEntry("stripe", "2026-07-29.preview", "Renames the tax IDs property",
+                       "Renames the tax IDs property", True, (), url)
+    assert enrich_change(bare, fetch=lambda u: RENAME_DETAIL).symbols == ("tax_ids",)
+    titled = ChangeEntry("stripe", "2022-11-15", "t", "t", True, ("charges",), url)
+    assert enrich_change(titled, fetch=lambda u: RENAME_DETAIL).symbols == ("charges",)
