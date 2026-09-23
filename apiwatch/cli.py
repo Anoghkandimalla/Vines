@@ -10,8 +10,8 @@ from apiwatch.patcher.agent import run_agent
 from apiwatch.patcher.pr import open_draft_pr
 from apiwatch.patcher.prompt import build_prompt
 from apiwatch.state import load_state, save_state
+from apiwatch.watcher import get_format
 from apiwatch.watcher.core import load_source, new_breaking_changes
-from apiwatch.watcher.stripe import enrich_change, parse_changelog
 
 
 def _branch_exists_on_origin(repo: Path, branch: str) -> bool:
@@ -50,6 +50,7 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     name = api["name"]
     source = str(api["changelog"])
     state_file = cfg["state_file"]
+    parse_changelog, enrich_change = get_format(api)
     entries = parse_changelog(load_source(source), url=source)
     if not entries:
         # A healthy changelog source never parses to nothing — likely a
@@ -108,7 +109,8 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
             # Enrichment fetches the entry's detail page for replacement
             # guidance, feeding both the agent prompt and the PR body;
             # sites and allowlist stay as mapped above.
-            change = enrich_change(change)
+            if enrich_change is not None:
+                change = enrich_change(change)
             run_agent(repo, build_prompt(change, sites), runner=runner)
             touched = _changed_files(repo, state_file)
             if not touched:

@@ -11,26 +11,22 @@ from apiwatch.config import load_config
 FIXTURE = Path(__file__).parent / "fixtures" / "stripe_changelog.md"
 
 
-@pytest.fixture
-def target(tmp_path):
-    """A consuming repo with a local origin, stale state, and apiwatch config."""
+TWILIO_FIXTURE = Path(__file__).parent / "fixtures" / "twilio_changelog.md"
+
+
+def _make_target(tmp_path, app_text, config_text, state):
+    """A consuming repo with a local origin, the given state, and apiwatch config."""
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
     repo = tmp_path / "repo"
     repo.mkdir()
     g = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
-    (repo / "app.py").write_text(
-        "import stripe\n"
-        "pi = stripe.PaymentIntent.retrieve(pid)\n"
-        "charge = pi.charges.data[0]\n"
-    )
-    (repo / "apiwatch.yml").write_text(
-        f"apis:\n  - name: stripe\n    changelog: {FIXTURE}\n"
-    )
-    state = repo / ".apiwatch" / "state.json"
-    state.parent.mkdir()
-    state.write_text(json.dumps({"stripe": {"last_version": "2022-08-01"}}))
+    (repo / "app.py").write_text(app_text)
+    (repo / "apiwatch.yml").write_text(config_text)
+    state_path = repo / ".apiwatch" / "state.json"
+    state_path.parent.mkdir()
+    state_path.write_text(json.dumps(state))
     subprocess.run(g + ["add", "-A"], check=True)
     subprocess.run(g + ["commit", "-q", "-m", "init"], check=True)
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
@@ -40,6 +36,31 @@ def target(tmp_path):
     gh.write_text(f'#!/bin/sh\necho "$@" >> {gh_log}\n')
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
     return repo, origin, gh, gh_log
+
+
+@pytest.fixture
+def target(tmp_path):
+    return _make_target(
+        tmp_path,
+        "import stripe\n"
+        "pi = stripe.PaymentIntent.retrieve(pid)\n"
+        "charge = pi.charges.data[0]\n",
+        f"apis:\n  - name: stripe\n    changelog: {FIXTURE}\n",
+        {"stripe": {"last_version": "2022-08-01"}},
+    )
+
+
+@pytest.fixture
+def twilio_target(tmp_path):
+    return _make_target(
+        tmp_path,
+        "from twilio.rest import Client\n"
+        "client = Client(sid, token)\n"
+        "risk = client.lookups.v2.phone_numbers(n).fetch(fields='sms_pumping_risk')\n"
+        "carrier = risk.sms_pumping_risk['carrier']\n",
+        f"apis:\n  - name: twilio\n    changelog: {TWILIO_FIXTURE}\n",
+        {"twilio": {"last_version": "2024-01-25"}},
+    )
 
 
 def _fake_runner(repo_root, prompt):
@@ -157,3 +178,40 @@ def test_files_without_api_mention_are_excluded_from_patch_scope(target):
     # own.py never mentions the watched API, so it must not be offered to the agent
     assert "own.py" not in prompts[0]
     assert "app.py" in prompts[0]
+
+
+def test_e2e_twilio_proposes_draft_pr(twilio_target):
+    repo, origin, gh, gh_log = twilio_target
+    prompts = []
+
+    def runner(repo_root, prompt):
+        prompts.append(prompt)
+        app = repo_root / "app.py"
+        app.write_text(app.read_text().replace(
+            "risk.sms_pumping_risk['carrier']", "risk.sms_pumping_risk['carrier_risk_category']"
+        ))
+
+    count = run(repo, repo / "apiwatch.yml", runner=runner, gh_cmd=str(gh))
+    # Only the sms_pumping_risk change touches this repo; the other breaking
+    # changes in the window (live_activity, Tags, ...) have no call sites.
+    assert count == 1
+    assert "sms_pumping_risk" in prompts[0] and "twilio" in prompts[0]
+    assert "--draft" in gh_log.read_text()
+    branches = subprocess.run(
+        ["git", "-C", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert "apiwatch/twilio-2024-02-09-1" in branches
+    assert not any(b.startswith("apiwatch/twilio-2024-02-27") for b in branches)
+    state = subprocess.run(
+        ["git", "-C", str(origin), "show", "apiwatch/twilio-2024-02-09-1:.apiwatch/state.json"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert json.loads(state)["twilio"]["last_version"] == "2024-02-27"
+
+
+def test_unknown_format_fails_that_api(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "apiwatch.yml").write_text(f"apis:\n  - name: acme\n    changelog: {FIXTURE}\n")
+    with pytest.raises(RuntimeError, match="acme"):
+        run(repo, repo / "apiwatch.yml", dry_run=True)

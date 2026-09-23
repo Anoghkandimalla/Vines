@@ -2,5 +2,8 @@
 apis:
   - name: stripe
     changelog: https://docs.stripe.com/changelog.md
+  - name: twilio
+    changelog: https://raw.githubusercontent.com/twilio/twilio-python/main/CHANGES.md
+    # format: twilio   # defaults to the api name; set it when `name` differs
 state_file: .apiwatch/state.json
 base_branch: main
