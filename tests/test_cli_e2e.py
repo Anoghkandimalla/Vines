@@ -284,3 +284,28 @@ def test_agent_may_update_related_fixtures(target):
         capture_output=True, text=True, check=True,
     ).stdout
     assert "latest_charge" in show
+
+
+def test_commit_state_persists_first_run_seed(target):
+    repo, origin, gh, gh_log = target
+    (repo / ".apiwatch" / "state.json").unlink()
+    g = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(g + ["commit", "-q", "-am", "no state"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
+    assert run(repo, repo / "apiwatch.yml", commit_state=True, gh_cmd=str(gh)) == 0
+    state = subprocess.run(
+        ["git", "-C", str(origin), "show", "main:.apiwatch/state.json"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert json.loads(state)["stripe"]["last_version"] == "2022-11-15"
+    files = subprocess.run(
+        ["git", "-C", str(origin), "show", "--name-only", "--format=", "main"],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert files == [".apiwatch/state.json"]
+    # An unchanged state file makes no further commit.
+    head = subprocess.run(["git", "-C", str(origin), "rev-parse", "main"],
+                          capture_output=True, text=True, check=True).stdout
+    run(repo, repo / "apiwatch.yml", commit_state=True, gh_cmd=str(gh))
+    assert subprocess.run(["git", "-C", str(origin), "rev-parse", "main"],
+                          capture_output=True, text=True, check=True).stdout == head

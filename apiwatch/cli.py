@@ -161,8 +161,29 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     return proposed
 
 
+def _commit_state(repo: Path, state_file: str, base: str) -> None:
+    """Commit and push only the state file to the base branch, if it changed.
+
+    In CI every run starts from a fresh checkout, so a watermark that only
+    lives in the working tree is lost: without this, a first run's seed
+    never persists and every run is a first run. Touches nothing but the
+    state file; a rejected push (e.g. a protected branch) only warns.
+    """
+    git = ["git", "-C", str(repo), "-c", "user.email=apiwatch@localhost", "-c", "user.name=apiwatch"]
+    subprocess.run(git + ["add", "--", state_file], check=True)
+    staged = subprocess.run(git + ["diff", "--cached", "--quiet", "--", state_file])
+    if staged.returncode == 0:
+        return
+    subprocess.run(git + ["commit", "-q", "-m", "apiwatch: advance changelog watermark",
+                          "--", state_file], check=True)
+    pushed = subprocess.run(git + ["push", "-q", "origin", f"HEAD:{base}"])
+    if pushed.returncode != 0:
+        print(f"[apiwatch] WARNING: could not push {state_file} to {base} (protected branch?); "
+              "the next run will re-check the same changes")
+
+
 def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cmd: str = "gh",
-        max_call_sites: int | None = None) -> int:
+        max_call_sites: int | None = None, commit_state: bool = False) -> int:
     repo = Path(repo)
     cfg = load_config(config_path)
     if max_call_sites is None:
@@ -178,6 +199,8 @@ def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cm
         except Exception as exc:
             failed.append(api["name"])
             print(f"[apiwatch] ERROR: {api['name']}: {exc}")
+    if commit_state and not dry_run:
+        _commit_state(repo, cfg["state_file"], cfg["base_branch"])
     if failed:
         raise RuntimeError(f"apiwatch failed for: {', '.join(failed)}")
     return proposed
@@ -190,8 +213,10 @@ def main(argv=None) -> int:
     runp.add_argument("--repo", default=".", type=Path)
     runp.add_argument("--config", default="apiwatch.yml", type=Path)
     runp.add_argument("--dry-run", action="store_true")
+    runp.add_argument("--commit-state", action="store_true",
+                      help="commit and push the state file to the base branch (for CI)")
     args = parser.parse_args(argv)
-    count = run(args.repo, args.config, dry_run=args.dry_run)
+    count = run(args.repo, args.config, dry_run=args.dry_run, commit_state=args.commit_state)
     print(f"[apiwatch] done: {count} patch(es) proposed")
     return 0
 
