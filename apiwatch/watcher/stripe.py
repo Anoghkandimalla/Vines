@@ -35,29 +35,67 @@ def extract_symbols(text: str) -> tuple[str, ...]:
 
 _DETAIL_CAP = 4000
 _REST_SECTION_RE = re.compile(r"^####\s+REST API\s*$(.*?)(?=^#{2,4}\s|\Z)", re.MULTILINE | re.DOTALL)
-_CHANGE_ROW_RE = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*([A-Za-z ]+?)\s*\|", re.MULTILINE)
+_CELLS_RE = re.compile(r"^\|(.*?)\|(.*?)\|")
+_BACKTICKED_RE = re.compile(r"`([^`]+)`")
+_LINK_TEXT_RE = re.compile(r"\[([^\]]+)\]")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def detail_symbols(body: str) -> tuple[str, ...]:
-    """Symbols a detail page says existing code may depend on.
-
-    Prefers the page's REST API "Changes" table, skipping `Added` rows so a
-    rename's new name (which already-migrated code uses) isn't evidence; a
-    dotted field (`SubscriptionItem.billed_until`) contributes its last part.
-    Without a table, falls back to the prose's backticked multi-word
-    snake_case names: prose also backticks enum values and common words
-    (`processing`, `never`, `price`) that would match unrelated code.
-    """
+def _breaking_rows(body: str):
+    """(fields, resources) for each non-Added, non-enum row of the REST table."""
     section = _REST_SECTION_RE.search(body)
+    if not section:
+        return
+    kind = ""
+    for line in section.group(1).splitlines():
+        m = _CELLS_RE.match(line.strip())
+        if not m or set(m[1].strip()) <= set("- "):
+            continue
+        fields = _BACKTICKED_RE.findall(m[1])
+        if not fields:
+            kind = m[1].strip().lower()  # header row: Parameters / Field / Values
+            continue
+        if kind == "values" or m[2].strip().lower() == "added":
+            continue
+        cells = line.strip().strip("|").split("|")
+        yield fields, _LINK_TEXT_RE.findall(cells[2] if len(cells) > 2 else "")
+
+
+def detail_symbols(body: str) -> tuple[str, ...]:
+    """Fields a detail page says existing code may depend on.
+
+    Read from the page's REST API "Changes" table: `Removed`/`Changed` rows
+    only, since added fields (including a rename's new name) can't break
+    existing code and already-migrated code uses them. A dotted field
+    (`SubscriptionItem.billed_until`) contributes its last part. Enum-value
+    tables are skipped: removed values (`custom`, `hosted`) are common words.
+
+    No table, no symbols: without one the page describes client-side
+    (Stripe.js) or behavioral changes, and its prose backticks enum values
+    and ordinary words that only ever matched unrelated code.
+    """
     seen: list[str] = []
-    if section:
-        for field, change in _CHANGE_ROW_RE.findall(section.group(1)):
+    for fields, _ in _breaking_rows(body):
+        for field in fields:
             name = field.split(".")[-1]
-            if change.strip().lower() != "added" and _IDENT_RE.match(name) and name not in seen:
+            if _IDENT_RE.match(name) and name not in seen:
                 seen.append(name)
-        if seen:
-            return tuple(seen)
+    return tuple(seen)
+
+
+def detail_resources(body: str) -> tuple[str, ...]:
+    """Resources the breaking rows apply to, by their object name.
+
+    `Checkout.Session.collected_information` -> `Session`,
+    `PromotionCode#create` -> `PromotionCode`: the last CapitalCase part.
+    """
+    seen: list[str] = []
+    for fields, resources in _breaking_rows(body):
+        for text in resources:
+            caps = [p for p in re.split(r"[.#]", text) if p[:1].isupper()]
+            if caps and caps[-1] not in seen:
+                seen.append(caps[-1])
+    return tuple(seen)
     for sym in extract_symbols(body):
         name = sym.split(".")[-1]
         if "_" in name and name.islower() and name not in seen:
@@ -105,8 +143,10 @@ def enrich_change(change, fetch=None):
     description = re.sub(r"\n{3,}", "\n\n", tidy).strip()[:_DETAIL_CAP]
     if not description:
         return change
-    return replace(change, description=description,
-                   symbols=change.symbols or detail_symbols(body))
+    if change.symbols:
+        return replace(change, description=description)
+    return replace(change, description=description, symbols=detail_symbols(body),
+                   resources=detail_resources(body))
 
 
 def parse_changelog(text: str, url: str = "") -> list[ChangeEntry]:

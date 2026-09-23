@@ -138,12 +138,23 @@ def test_detail_symbols_prefer_rest_table_and_skip_added():
     assert detail_symbols(changed) == ("billed_until",)
 
 
-def test_detail_symbols_fallback_drops_literals():
+def test_detail_symbols_without_rest_table_is_empty():
     from apiwatch.watcher.stripe import detail_symbols
 
-    assert detail_symbols("Returns `null` or a `boolean`; use `latest_charge`.") == ("latest_charge",)
-    prose = "Status becomes `processing` (see `payment_intent.processing`); set `never` or `requires_action`."
-    assert detail_symbols(prose) == ("requires_action",)
+    prose = "Status becomes `processing`; set `never` or `requires_action`. Use `latest_charge`."
+    assert detail_symbols(prose) == ()
+
+
+def test_detail_symbols_multi_value_rows_and_enum_tables():
+    from apiwatch.watcher.stripe import detail_symbols
+
+    body = ("#### REST API\n\n| Parameters | Change | Resources |\n| --- | --- | --- |\n"
+            "| `acknowledged`, `payment_never_settled` | Added | [Review](/x) |\n"
+            "| `V2.Core.EventDestination#create.events_from`, `V2.Core.EventDestination.events_from`"
+            " | Changed | `enum -> string` |\n\n"
+            "| Values | Change | Enums |\n| --- | --- | --- |\n"
+            "| `custom`, `embedded`, `hosted` | Removed | [Checkout.Session#create](/x) |\n")
+    assert detail_symbols(body) == ("events_from",)
 
 
 def test_enrich_change_fills_symbols_only_when_title_had_none():
@@ -170,3 +181,13 @@ def test_enrich_change_keeps_prose_and_rest_table_only():
     desc = enrich_change(change, fetch=lambda u: body).description
     assert "not expanded in events" in desc and "#### REST API" in desc
     assert "Ruby" not in desc and "Workbench" not in desc
+
+
+def test_detail_resources_from_breaking_rows():
+    from apiwatch.watcher.stripe import detail_resources
+
+    body = ("#### REST API\n\n| Parameters | Change | Resources |\n| --- | --- | --- |\n"
+            "| `promotion` | Added | [Invoice](/x) |\n"
+            "| `coupon` | Removed | [PromotionCode](/x), [PromotionCode#create](/y) |\n"
+            "| `tax_ids` | Removed | [Checkout.Session.collected_information](/z) |\n")
+    assert detail_resources(body) == ("PromotionCode", "Session")

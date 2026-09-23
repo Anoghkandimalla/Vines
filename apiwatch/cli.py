@@ -84,7 +84,8 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     # A display-style name that appears in no source file would silently hide
     # every real usage, so shout when the filter can never match.
     api_filter = str(api.get("match", name)) if cfg["require_api_mention"] else None
-    if api_filter and changes and not repo_mentions(repo, api_filter):
+    uses_api = not (api_filter and changes) or repo_mentions(repo, api_filter)
+    if not uses_api:
         print(f"[apiwatch] WARNING: {name}: no scanned file mentions '{api_filter}'; if this "
               "repo uses the API under another name, set 'match:' for it in apiwatch.yml")
     for change in changes:
@@ -95,8 +96,16 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
         enriched = False
         if enrich_change is not None and not change.symbols:
             change, enriched = enrich_change(change), True
-        sites = scan_repo(repo, change.symbols, api_name=api_filter)
+        sites = scan_repo(repo, change.symbols, api_name=api_filter, resources=change.resources)
         newest = max(newest, change.version)
+        if not change.symbols:
+            # Nothing to search for (e.g. a Stripe.js-only or behavioral
+            # change): not evidence the repo is unaffected, so say so —
+            # unless the repo never mentions the API at all.
+            if uses_api:
+                print(f"[apiwatch] {name} {change.version}: breaking change names no API fields "
+                      f"to map; review manually if relevant: {change.title} ({change.url})")
+            continue
         if not sites:
             print(f"[apiwatch] {name} {change.version}: breaking change does not affect this repo: {change.title}")
             continue

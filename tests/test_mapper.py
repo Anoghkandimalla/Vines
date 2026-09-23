@@ -93,3 +93,32 @@ def test_related_fixtures_scoped_to_affected_dirs(tmp_path):
         "hooks/stripe/fixtures/discount.json"
     ]
     assert related_fixtures(tmp_path, sites, ("Discount",)) == []
+
+
+def test_primary_symbols_match_only_field_access(tmp_path):
+    (tmp_path / "billing.py").write_text(
+        "import stripe\n"
+        "coupon = Coupon.objects.get(code=code)\n"          # local variable: no
+        "msg = 'This coupon code has expired.'\n"           # English: no
+        "name = discount.coupon.name\n"                     # attribute: yes
+        "cid = event['data']['coupon']['id']\n"             # quoted key: yes
+        "stripe.Discount.create(coupon=cid)\n"              # kwarg: yes
+        "if coupon == other: pass\n"                        # comparison: no
+    )
+    lines = [s.line for s in scan_repo(tmp_path, ["coupon"])]
+    assert lines == [4, 5, 6]
+
+
+def test_kwarg_on_its_own_line_counts_for_file_gate(tmp_path):
+    (tmp_path / "a.py").write_text("import stripe\nstripe.Discount.create(\n    coupon=cid,\n)\n")
+    assert [s.line for s in scan_repo(tmp_path, ["coupon"])] == [3]
+
+
+def test_resource_gate_and_migrations_skipped(tmp_path):
+    (tmp_path / "hook.py").write_text("import stripe\nif kind == 'discount': c = obj['coupon']\n")
+    (tmp_path / "promo.py").write_text("import stripe\npromotion_code = x\nc = obj['coupon']\n")
+    (tmp_path / "migrations").mkdir()
+    (tmp_path / "migrations" / "0001.py").write_text("import stripe\n# promotion code\nx.coupon\n")
+    files = {s.file for s in scan_repo(tmp_path, ["coupon"], resources=["PromotionCode"])}
+    assert files == {"promo.py"}
+    assert {s.file for s in scan_repo(tmp_path, ["coupon"])} == {"hook.py", "promo.py"}
