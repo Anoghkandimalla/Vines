@@ -1,3 +1,4 @@
+from apiwatch.models import CallSite
 from apiwatch.mapper import scan_repo
 
 
@@ -73,3 +74,22 @@ def test_repo_mentions(tmp_path):
     (tmp_path / "a.py").write_text("import stripe\n")
     assert repo_mentions(tmp_path, "stripe") is True
     assert repo_mentions(tmp_path, "twilio") is False
+
+
+def test_related_fixtures_scoped_to_affected_dirs(tmp_path):
+    from apiwatch.mapper import related_fixtures
+
+    hook = tmp_path / "hooks" / "stripe"
+    (hook / "fixtures").mkdir(parents=True)
+    (hook / "view.py").write_text("import stripe\nname = obj['coupon']['name']\n")
+    (hook / "fixtures" / "discount.json").write_text('{"coupon": {"id": "c1"}}')
+    (hook / "fixtures" / "charge.json").write_text('{"amount": 1}')
+    (hook / "notes.json").write_text('{"coupon": 1}')  # not under a fixture dir
+    elsewhere = tmp_path / "other" / "tests"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "coupon.json").write_text('{"coupon": 2}')  # outside affected dir
+    sites = [CallSite("hooks/stripe/view.py", 2, "x", "coupon")]
+    assert related_fixtures(tmp_path, sites, ("coupon", "Discount")) == [
+        "hooks/stripe/fixtures/discount.json"
+    ]
+    assert related_fixtures(tmp_path, sites, ("Discount",)) == []

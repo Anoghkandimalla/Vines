@@ -69,3 +69,35 @@ def scan_repo(
                         )
                     )
     return sites
+
+
+FIXTURE_DIRS = {"fixtures", "tests", "test", "testdata"}
+FIXTURE_EXTENSIONS = (".json", ".yaml", ".yml")
+MAX_FIXTURES = 20
+
+
+def related_fixtures(root: Path, sites: Sequence[CallSite], symbols: Sequence[str]) -> list[str]:
+    """Test fixtures near the affected code that carry a changed symbol.
+
+    A patch that changes how code reads a response usually breaks the tests
+    feeding it recorded payloads, so the agent may update those too. Scope is
+    kept tight: data files under a test/fixture directory beneath an affected
+    file's own directory, containing a primary symbol, at most MAX_FIXTURES.
+    """
+    root = Path(root)
+    primary = [s for s in symbols if len(s) >= MIN_SYMBOL_LEN and _is_primary(s)]
+    if not primary:
+        return []
+    patterns = [re.compile(rf"\b{re.escape(s)}\b") for s in primary]
+    found: set[str] = set()
+    for base in sorted({(root / s.file).parent for s in sites}):
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or path.suffix not in FIXTURE_EXTENSIONS:
+                continue
+            parts = path.relative_to(root).parts[:-1]
+            if SKIP_DIRS & set(parts) or not FIXTURE_DIRS & set(parts):
+                continue
+            text = path.read_text(errors="replace")
+            if any(p.search(text) for p in patterns):
+                found.add(str(path.relative_to(root)))
+    return sorted(found)[:MAX_FIXTURES]

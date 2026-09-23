@@ -156,3 +156,17 @@ def test_enrich_change_fills_symbols_only_when_title_had_none():
     assert enrich_change(bare, fetch=lambda u: RENAME_DETAIL).symbols == ("tax_ids",)
     titled = ChangeEntry("stripe", "2022-11-15", "t", "t", True, ("charges",), url)
     assert enrich_change(titled, fetch=lambda u: RENAME_DETAIL).symbols == ("charges",)
+
+
+def test_enrich_change_keeps_prose_and_rest_table_only():
+    from apiwatch.models import ChangeEntry
+    from apiwatch.watcher.stripe import enrich_change
+
+    body = ("# Title\n\nThe `coupon` is not expanded in events.\n\n## Changes\n\n#### REST API\n\n"
+            "| P | Change | R |\n| --- | --- | --- |\n| `coupon` | Removed | x |\n\n"
+            "#### Ruby\n\n| P | Change | R |\n| --- | --- | --- |\n| `coupon` | Removed | Ruby::X |\n\n"
+            "## Upgrade\n\n1. View your current API version in Workbench.\n")
+    change = ChangeEntry("stripe", "2025-09-30.clover", "t", "t", True, (), "https://x/y.md")
+    desc = enrich_change(change, fetch=lambda u: body).description
+    assert "not expanded in events" in desc and "#### REST API" in desc
+    assert "Ruby" not in desc and "Workbench" not in desc

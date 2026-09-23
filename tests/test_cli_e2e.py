@@ -261,3 +261,26 @@ def test_preview_versions_skipped_but_watermark_advances(tmp_path):
     (repo / ".apiwatch" / "state.json").write_text(
         json.dumps({"stripe": {"last_version": "2026-03-25.dahlia"}}))
     assert run(repo, repo / "apiwatch.yml", dry_run=True) == 1
+
+
+def test_agent_may_update_related_fixtures(target):
+    repo, origin, gh, gh_log = target
+    fixture = repo / "tests" / "fixtures" / "pi.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text('{"charges": {"data": []}}\n')
+    g = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(g + ["add", "-A"], check=True)
+    subprocess.run(g + ["commit", "-q", "-m", "fixture"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
+
+    def runner(repo_root, prompt):
+        assert "tests/fixtures/pi.json" in prompt
+        _fake_runner(repo_root, prompt)
+        (repo_root / "tests" / "fixtures" / "pi.json").write_text('{"latest_charge": "ch_1"}\n')
+
+    assert run(repo, repo / "apiwatch.yml", runner=runner, gh_cmd=str(gh)) == 1
+    show = subprocess.run(
+        ["git", "-C", str(origin), "show", "apiwatch/stripe-2022-11-15-1:tests/fixtures/pi.json"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "latest_charge" in show

@@ -65,6 +65,20 @@ def detail_symbols(body: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+_SDK_SECTION_RE = re.compile(r"^####\s+(?!REST API\s*$).+?$.*?(?=^#{2,4}\s|\Z)", re.MULTILINE | re.DOTALL)
+_UPGRADE_RE = re.compile(r"^## Upgrade\s*$.*", re.MULTILINE | re.DOTALL)
+
+
+def _prose_and_rest_changes(body: str) -> str:
+    """Drop per-SDK copies of the changes table and the generic upgrade steps.
+
+    Detail pages repeat the REST changes table once per SDK (Ruby, Java,
+    Go, ...) and end with boilerplate upgrade steps; left in, they bury the
+    prose that says what the new shape is (e.g. "not expanded in events").
+    """
+    return _SDK_SECTION_RE.sub("", _UPGRADE_RE.sub("", body))
+
+
 def enrich_change(change, fetch=None):
     """Fetch the entry's detail page for a fuller description.
 
@@ -87,7 +101,7 @@ def enrich_change(change, fetch=None):
         print(f"[apiwatch] WARNING: could not fetch change detail {change.url}: {exc}; "
               "patching from the headline only")
         return change
-    tidy = "\n".join(line.rstrip() for line in body.splitlines())
+    tidy = "\n".join(line.rstrip() for line in _prose_and_rest_changes(body).splitlines())
     description = re.sub(r"\n{3,}", "\n\n", tidy).strip()[:_DETAIL_CAP]
     if not description:
         return change

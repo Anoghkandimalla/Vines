@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from apiwatch.config import load_config
-from apiwatch.mapper import repo_mentions, scan_repo
+from apiwatch.mapper import related_fixtures, repo_mentions, scan_repo
 from apiwatch.patcher.agent import run_agent
 from apiwatch.patcher.pr import open_draft_pr
 from apiwatch.patcher.prompt import build_prompt
@@ -120,12 +120,13 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
                   "(open PR awaiting review?); skipping")
             continue
         print(f"[apiwatch] {name} {change.version}: patching {len(sites)} call sites: {change.title}")
-        allowed = sorted({s.file for s in sites})
+        fixtures = related_fixtures(repo, sites, change.symbols)
+        allowed = sorted({s.file for s in sites} | set(fixtures))
         try:
             # Sites and allowlist stay as mapped above.
             if enrich_change is not None and not enriched:
                 change = enrich_change(change)
-            run_agent(repo, build_prompt(change, sites), runner=runner)
+            run_agent(repo, build_prompt(change, sites, fixtures), runner=runner)
             touched = _changed_files(repo, state_file)
             if not touched:
                 print(f"[apiwatch] agent produced no changes for {name} {change.version}; skipping PR")
