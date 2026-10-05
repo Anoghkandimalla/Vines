@@ -5,13 +5,13 @@ import sys
 from pathlib import Path
 
 from apiwatch.config import load_config
-from apiwatch.mapper import repo_mentions, scan_repo
+from apiwatch.mapper import related_fixtures, repo_mentions, scan_repo
 from apiwatch.patcher.agent import run_agent
 from apiwatch.patcher.pr import open_draft_pr
 from apiwatch.patcher.prompt import build_prompt
 from apiwatch.state import load_state, save_state
+from apiwatch.watcher import get_format
 from apiwatch.watcher.core import load_source, new_breaking_changes
-from apiwatch.watcher.stripe import enrich_change, parse_changelog
 
 
 def _branch_exists_on_origin(repo: Path, branch: str) -> bool:
@@ -50,6 +50,7 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     name = api["name"]
     source = str(api["changelog"])
     state_file = cfg["state_file"]
+    parse_changelog, enrich_change = get_format(api)
     entries = parse_changelog(load_source(source), url=source)
     if not entries:
         # A healthy changelog source never parses to nothing — likely a
@@ -67,19 +68,45 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
             save_state(state_path, state)
         return 0
     changes = new_breaking_changes(entries, last)
-    proposed = 0
     newest = last
+    if not api.get("include_preview", cfg["include_preview"]):
+        # Preview API versions (e.g. Stripe's `2026-07-29.preview`) only reach
+        # integrations that opt into them; the watermark still advances past them.
+        skipped = [c for c in changes if c.version.endswith(".preview")]
+        if skipped:
+            changes = [c for c in changes if not c.version.endswith(".preview")]
+            newest = max(newest, *(c.version for c in skipped))
+            print(f"[apiwatch] {name}: skipping {len(skipped)} preview-version breaking change(s); "
+                  "set include_preview: true to watch them")
+    proposed = 0
     per_version: dict[str, int] = {}
+    proposed_sites: dict[frozenset, str] = {}
     # The mention filter matches on `match` if configured, else the api name.
     # A display-style name that appears in no source file would silently hide
     # every real usage, so shout when the filter can never match.
     api_filter = str(api.get("match", name)) if cfg["require_api_mention"] else None
-    if api_filter and changes and not repo_mentions(repo, api_filter):
+    uses_api = not (api_filter and changes) or repo_mentions(repo, api_filter)
+    if not uses_api:
         print(f"[apiwatch] WARNING: {name}: no scanned file mentions '{api_filter}'; if this "
               "repo uses the API under another name, set 'match:' for it in apiwatch.yml")
     for change in changes:
-        sites = scan_repo(repo, change.symbols, api_name=api_filter)
+        # Enrichment fetches the entry's detail page for replacement guidance
+        # (for the agent prompt and PR body) and, when the headline names no
+        # fields, the symbols to map. Symbol-less changes need it before
+        # mapping; the rest only if they survive mapping, to keep fetches few.
+        enriched = False
+        if enrich_change is not None and not change.symbols:
+            change, enriched = enrich_change(change), True
+        sites = scan_repo(repo, change.symbols, api_name=api_filter, resources=change.resources)
         newest = max(newest, change.version)
+        if not change.symbols:
+            # Nothing to search for (e.g. a Stripe.js-only or behavioral
+            # change): not evidence the repo is unaffected, so say so —
+            # unless the repo never mentions the API at all.
+            if uses_api:
+                print(f"[apiwatch] {name} {change.version}: breaking change names no API fields "
+                      f"to map; review manually if relevant: {change.title} ({change.url})")
+            continue
         if not sites:
             print(f"[apiwatch] {name} {change.version}: breaking change does not affect this repo: {change.title}")
             continue
@@ -91,6 +118,15 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
                   f"max_call_sites={max_call_sites}; too broad to patch automatically, "
                   f"review manually: {change.title} ({change.url})")
             continue
+        site_key = frozenset((s.file, s.line) for s in sites)
+        if site_key in proposed_sites:
+            # Vendors often split one removal across entries (e.g. the same
+            # parameter on Checkout Sessions and on Payment Intents); a second
+            # PR editing the same lines would only conflict with the first.
+            print(f"[apiwatch] {name} {change.version}: same call sites as "
+                  f"'{proposed_sites[site_key]}'; covered by that patch: {change.title}")
+            continue
+        proposed_sites[site_key] = change.title
         per_version[change.version] = per_version.get(change.version, 0) + 1
         branch = f"apiwatch/{name}-{change.version}-{per_version[change.version]}"
         if dry_run:
@@ -103,13 +139,13 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
                   "(open PR awaiting review?); skipping")
             continue
         print(f"[apiwatch] {name} {change.version}: patching {len(sites)} call sites: {change.title}")
-        allowed = sorted({s.file for s in sites})
+        fixtures = related_fixtures(repo, sites, change.symbols)
+        allowed = sorted({s.file for s in sites} | set(fixtures))
         try:
-            # Enrichment fetches the entry's detail page for replacement
-            # guidance, feeding both the agent prompt and the PR body;
-            # sites and allowlist stay as mapped above.
-            change = enrich_change(change)
-            run_agent(repo, build_prompt(change, sites), runner=runner)
+            # Sites and allowlist stay as mapped above.
+            if enrich_change is not None and not enriched:
+                change = enrich_change(change)
+            run_agent(repo, build_prompt(change, sites, fixtures), runner=runner)
             touched = _changed_files(repo, state_file)
             if not touched:
                 print(f"[apiwatch] agent produced no changes for {name} {change.version}; skipping PR")
@@ -135,8 +171,29 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
     return proposed
 
 
+def _commit_state(repo: Path, state_file: str, base: str) -> None:
+    """Commit and push only the state file to the base branch, if it changed.
+
+    In CI every run starts from a fresh checkout, so a watermark that only
+    lives in the working tree is lost: without this, a first run's seed
+    never persists and every run is a first run. Touches nothing but the
+    state file; a rejected push (e.g. a protected branch) only warns.
+    """
+    git = ["git", "-C", str(repo), "-c", "user.email=apiwatch@localhost", "-c", "user.name=apiwatch"]
+    subprocess.run(git + ["add", "--", state_file], check=True)
+    staged = subprocess.run(git + ["diff", "--cached", "--quiet", "--", state_file])
+    if staged.returncode == 0:
+        return
+    subprocess.run(git + ["commit", "-q", "-m", "apiwatch: advance changelog watermark",
+                          "--", state_file], check=True)
+    pushed = subprocess.run(git + ["push", "-q", "origin", f"HEAD:{base}"])
+    if pushed.returncode != 0:
+        print(f"[apiwatch] WARNING: could not push {state_file} to {base} (protected branch?); "
+              "the next run will re-check the same changes")
+
+
 def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cmd: str = "gh",
-        max_call_sites: int | None = None) -> int:
+        max_call_sites: int | None = None, commit_state: bool = False) -> int:
     repo = Path(repo)
     cfg = load_config(config_path)
     if max_call_sites is None:
@@ -152,6 +209,8 @@ def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cm
         except Exception as exc:
             failed.append(api["name"])
             print(f"[apiwatch] ERROR: {api['name']}: {exc}")
+    if commit_state and not dry_run:
+        _commit_state(repo, cfg["state_file"], cfg["base_branch"])
     if failed:
         raise RuntimeError(f"apiwatch failed for: {', '.join(failed)}")
     return proposed
@@ -164,8 +223,10 @@ def main(argv=None) -> int:
     runp.add_argument("--repo", default=".", type=Path)
     runp.add_argument("--config", default="apiwatch.yml", type=Path)
     runp.add_argument("--dry-run", action="store_true")
+    runp.add_argument("--commit-state", action="store_true",
+                      help="commit and push the state file to the base branch (for CI)")
     args = parser.parse_args(argv)
-    count = run(args.repo, args.config, dry_run=args.dry_run)
+    count = run(args.repo, args.config, dry_run=args.dry_run, commit_state=args.commit_state)
     print(f"[apiwatch] done: {count} patch(es) proposed")
     return 0
 

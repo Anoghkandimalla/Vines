@@ -28,3 +28,16 @@ def test_prompt_constrains_agent():
     p = build_prompt(_change(), [CallSite("app.py", 2, "x", "charges")])
     assert "only" in p.lower()
     assert "do not" in p.lower()
+
+
+def test_prompt_lists_fixtures_as_editable_and_guides_on_shape():
+    sites = [CallSite("app.py", 2, "x", "charges")]
+    p = build_prompt(_change(), sites, fixtures=["tests/fixtures/pi.json"])
+    assert "tests/fixtures/pi.json" in p
+    assert "Only edit these files: app.py, tests/fixtures/pi.json." in p
+    assert "ID string" in p and "webhooks" in p
+
+
+def test_prompt_without_fixtures_has_no_fixture_section():
+    p = build_prompt(_change(), [CallSite("app.py", 2, "x", "charges")])
+    assert "Test fixtures" not in p

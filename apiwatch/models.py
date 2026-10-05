@@ -11,6 +11,9 @@ class ChangeEntry:
     breaking: bool
     symbols: tuple[str, ...]
     url: str
+    # API resources the change applies to (e.g. "Discount"); when set, only
+    # files mentioning one of them count as affected.
+    resources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

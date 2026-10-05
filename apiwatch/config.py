@@ -8,6 +8,7 @@ DEFAULTS = {
     "base_branch": "main",
     "max_call_sites": 100,
     "require_api_mention": True,
+    "include_preview": False,
 }
 
 

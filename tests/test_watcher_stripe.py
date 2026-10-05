@@ -106,3 +106,97 @@ def test_enrich_change_non_md_url_skipped():
     change = ChangeEntry("stripe", "2022-11-15", "t", "orig", True, (), "https://x/upgrades#2022-11-15")
     enrich_change(change, fetch=lambda url: calls.append(url) or "body")
     assert calls == []
+
+
+RENAME_DETAIL = """# Renames the tax IDs property to tax ID in Checkout Session collected information
+
+Previously, `collected_information.tax_ids` returned an array, or `null`.
+
+## Changes
+
+#### REST API
+
+| Parameters | Change | Resources or endpoints |
+| --- | --- | --- |
+| `tax_id` | Added | [Checkout.Session.collected_information](/api/x) |
+| `tax_ids` | Removed | [Checkout.Session.collected_information](/api/x) |
+
+#### Ruby
+
+| Parameters | Change | Resources or methods |
+| --- | --- | --- |
+| `taxIds` | Removed | [Checkout::Session](/api/x) |
+"""
+
+
+def test_detail_symbols_prefer_rest_table_and_skip_added():
+    from apiwatch.watcher.stripe import detail_symbols
+
+    assert detail_symbols(RENAME_DETAIL) == ("tax_ids",)
+    changed = "#### REST API\n\n| Field | Change | From |\n| --- | --- | --- |\n" \
+              "| `SubscriptionItem.billed_until` | Changed | `x` |\n"
+    assert detail_symbols(changed) == ("billed_until",)
+
+
+def test_detail_symbols_without_rest_table_is_empty():
+    from apiwatch.watcher.stripe import detail_symbols
+
+    prose = "Status becomes `processing`; set `never` or `requires_action`. Use `latest_charge`."
+    assert detail_symbols(prose) == ()
+
+
+def test_detail_symbols_multi_value_rows_and_enum_tables():
+    from apiwatch.watcher.stripe import detail_symbols
+
+    body = ("#### REST API\n\n| Parameters | Change | Resources |\n| --- | --- | --- |\n"
+            "| `acknowledged`, `payment_never_settled` | Added | [Review](/x) |\n"
+            "| `V2.Core.EventDestination#create.events_from`, `V2.Core.EventDestination.events_from`"
+            " | Changed | `enum -> string` |\n\n"
+            "| Values | Change | Enums |\n| --- | --- | --- |\n"
+            "| `custom`, `embedded`, `hosted` | Removed | [Checkout.Session#create](/x) |\n")
+    assert detail_symbols(body) == ("events_from",)
+
+
+def test_enrich_change_fills_symbols_only_when_title_had_none():
+    from apiwatch.models import ChangeEntry
+    from apiwatch.watcher.stripe import enrich_change
+
+    url = "https://docs.stripe.com/changelog/dahlia/2026-07-29/tax-ids-rename.md"
+    bare = ChangeEntry("stripe", "2026-07-29.preview", "Renames the tax IDs property",
+                       "Renames the tax IDs property", True, (), url)
+    assert enrich_change(bare, fetch=lambda u: RENAME_DETAIL).symbols == ("tax_ids",)
+    titled = ChangeEntry("stripe", "2022-11-15", "t", "t", True, ("charges",), url)
+    assert enrich_change(titled, fetch=lambda u: RENAME_DETAIL).symbols == ("charges",)
+
+
+def test_enrich_change_keeps_prose_and_rest_table_only():
+    from apiwatch.models import ChangeEntry
+    from apiwatch.watcher.stripe import enrich_change
+
+    body = ("# Title\n\nThe `coupon` is not expanded in events.\n\n## Changes\n\n#### REST API\n\n"
+            "| P | Change | R |\n| --- | --- | --- |\n| `coupon` | Removed | x |\n\n"
+            "#### Ruby\n\n| P | Change | R |\n| --- | --- | --- |\n| `coupon` | Removed | Ruby::X |\n\n"
+            "## Upgrade\n\n1. View your current API version in Workbench.\n")
+    change = ChangeEntry("stripe", "2025-09-30.clover", "t", "t", True, (), "https://x/y.md")
+    desc = enrich_change(change, fetch=lambda u: body).description
+    assert "not expanded in events" in desc and "#### REST API" in desc
+    assert "Ruby" not in desc and "Workbench" not in desc
+
+
+def test_detail_resources_from_breaking_rows():
+    from apiwatch.watcher.stripe import detail_resources
+
+    body = ("#### REST API\n\n| Parameters | Change | Resources |\n| --- | --- | --- |\n"
+            "| `promotion` | Added | [Invoice](/x) |\n"
+            "| `coupon` | Removed | [PromotionCode](/x), [PromotionCode#create](/y) |\n"
+            "| `tax_ids` | Removed | [Checkout.Session.collected_information](/z) |\n")
+    assert detail_resources(body) == ("PromotionCode", "Session")
+
+
+def test_detail_symbols_skip_event_types_and_generic_fields():
+    from apiwatch.watcher.stripe import detail_symbols
+
+    body = ("#### REST API\n\n| Parameters | Change | Resources |\n| --- | --- | --- |\n"
+            "| `account.updated`, `Account.requirements.errors` | Changed | [Account](/x) |\n"
+            "| `reason`, `disabled_reason` | Changed | [Account](/x) |\n")
+    assert detail_symbols(body) == ("disabled_reason",)

@@ -34,6 +34,97 @@ def extract_symbols(text: str) -> tuple[str, ...]:
 
 
 _DETAIL_CAP = 4000
+_REST_SECTION_RE = re.compile(r"^####\s+REST API\s*$(.*?)(?=^#{2,4}\s|\Z)", re.MULTILINE | re.DOTALL)
+_CELLS_RE = re.compile(r"^\|(.*?)\|(.*?)\|")
+_BACKTICKED_RE = re.compile(r"`([^`]+)`")
+_LINK_TEXT_RE = re.compile(r"\[([^\]]+)\]")
+# One-word field names so common that matching them is noise, not evidence
+# (`reason=`, `.created`, `["name"]` appear in any codebase). A change whose
+# fields are all generic is left for manual review.
+_GENERIC_FIELDS = {
+    "id", "object", "type", "status", "name", "reason", "created", "updated",
+    "errors", "error", "data", "amount", "currency", "description", "metadata",
+    "url", "email", "value", "mode", "state", "source", "details", "transition",
+}
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _breaking_rows(body: str):
+    """(fields, resources) for each non-Added, non-enum row of the REST table."""
+    section = _REST_SECTION_RE.search(body)
+    if not section:
+        return
+    kind = ""
+    for line in section.group(1).splitlines():
+        m = _CELLS_RE.match(line.strip())
+        if not m or set(m[1].strip()) <= set("- "):
+            continue
+        fields = _BACKTICKED_RE.findall(m[1])
+        if not fields:
+            kind = m[1].strip().lower()  # header row: Parameters / Field / Values
+            continue
+        if kind == "values" or m[2].strip().lower() == "added":
+            continue
+        cells = line.strip().strip("|").split("|")
+        yield fields, _LINK_TEXT_RE.findall(cells[2] if len(cells) > 2 else "")
+
+
+def detail_symbols(body: str) -> tuple[str, ...]:
+    """Fields a detail page says existing code may depend on.
+
+    Read from the page's REST API "Changes" table: `Removed`/`Changed` rows
+    only, since added fields (including a rename's new name) can't break
+    existing code and already-migrated code uses them. A dotted field
+    (`SubscriptionItem.billed_until`) contributes its last part. Enum-value
+    tables are skipped: removed values (`custom`, `hosted`) are common words.
+
+    No table, no symbols: without one the page describes client-side
+    (Stripe.js) or behavioral changes, and its prose backticks enum values
+    and ordinary words that only ever matched unrelated code.
+    """
+    seen: list[str] = []
+    for fields, _ in _breaking_rows(body):
+        for field in fields:
+            if "." in field and not field[:1].isupper():
+                continue  # an event type (`account.updated`), not Resource.field
+            name = field.split(".")[-1]
+            if _IDENT_RE.match(name) and name.lower() not in _GENERIC_FIELDS and name not in seen:
+                seen.append(name)
+    return tuple(seen)
+
+
+def detail_resources(body: str) -> tuple[str, ...]:
+    """Resources the breaking rows apply to, by their object name.
+
+    `Checkout.Session.collected_information` -> `Session`,
+    `PromotionCode#create` -> `PromotionCode`: the last CapitalCase part.
+    """
+    seen: list[str] = []
+    for fields, resources in _breaking_rows(body):
+        for text in resources:
+            caps = [p for p in re.split(r"[.#]", text) if p[:1].isupper()]
+            if caps and caps[-1] not in seen:
+                seen.append(caps[-1])
+    return tuple(seen)
+    for sym in extract_symbols(body):
+        name = sym.split(".")[-1]
+        if "_" in name and name.islower() and name not in seen:
+            seen.append(name)
+    return tuple(seen)
+
+
+_SDK_SECTION_RE = re.compile(r"^####\s+(?!REST API\s*$).+?$.*?(?=^#{2,4}\s|\Z)", re.MULTILINE | re.DOTALL)
+_UPGRADE_RE = re.compile(r"^## Upgrade\s*$.*", re.MULTILINE | re.DOTALL)
+
+
+def _prose_and_rest_changes(body: str) -> str:
+    """Drop per-SDK copies of the changes table and the generic upgrade steps.
+
+    Detail pages repeat the REST changes table once per SDK (Ruby, Java,
+    Go, ...) and end with boilerplate upgrade steps; left in, they bury the
+    prose that says what the new shape is (e.g. "not expanded in events").
+    """
+    return _SDK_SECTION_RE.sub("", _UPGRADE_RE.sub("", body))
 
 
 def enrich_change(change, fetch=None):
@@ -41,7 +132,9 @@ def enrich_change(change, fetch=None):
 
     Table-format changelog entries carry only their title; the linked .md
     detail page has the full prose (including replacement guidance the patch
-    agent needs). Line structure is preserved so code samples in the guidance
+    agent needs). Current titles are plain prose naming no fields, so a
+    change without symbols takes them from the detail page (see
+    detail_symbols); symbols from the title are kept as-is. Line structure is preserved so code samples in the guidance
     stay readable. Failure-tolerant: any fetch problem returns the change
     as-is, with a warning — the patch will be lower-quality without it.
     """
@@ -56,11 +149,14 @@ def enrich_change(change, fetch=None):
         print(f"[apiwatch] WARNING: could not fetch change detail {change.url}: {exc}; "
               "patching from the headline only")
         return change
-    tidy = "\n".join(line.rstrip() for line in body.splitlines())
+    tidy = "\n".join(line.rstrip() for line in _prose_and_rest_changes(body).splitlines())
     description = re.sub(r"\n{3,}", "\n\n", tidy).strip()[:_DETAIL_CAP]
     if not description:
         return change
-    return replace(change, description=description)
+    if change.symbols:
+        return replace(change, description=description)
+    return replace(change, description=description, symbols=detail_symbols(body),
+                   resources=detail_resources(body))
 
 
 def parse_changelog(text: str, url: str = "") -> list[ChangeEntry]:
