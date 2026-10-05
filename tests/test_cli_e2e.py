@@ -309,3 +309,18 @@ def test_commit_state_persists_first_run_seed(target):
     run(repo, repo / "apiwatch.yml", commit_state=True, gh_cmd=str(gh))
     assert subprocess.run(["git", "-C", str(origin), "rev-parse", "main"],
                           capture_output=True, text=True, check=True).stdout == head
+
+
+def test_changes_with_identical_call_sites_get_one_patch(tmp_path):
+    index = tmp_path / "changelog.md"
+    index.write_text(
+        "## 2022-11-15\n\n| Change | Products | Type |\n| --- | --- | --- |\n"
+        "| [Removes `charges` from PaymentIntent](https://x/a) | Payments | Breaking |\n"
+        "| [Removes `charges` from SetupIntent](https://x/b) | Payments | Breaking |\n"
+    )
+    repo, origin, gh, gh_log = _make_target(
+        tmp_path, "import stripe\ncharge = pi.charges.data[0]\n",
+        f"apis:\n  - name: stripe\n    changelog: {index}\n",
+        {"stripe": {"last_version": "2022-08-01"}},
+    )
+    assert run(repo, repo / "apiwatch.yml", dry_run=True) == 1

@@ -80,6 +80,7 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
                   "set include_preview: true to watch them")
     proposed = 0
     per_version: dict[str, int] = {}
+    proposed_sites: dict[frozenset, str] = {}
     # The mention filter matches on `match` if configured, else the api name.
     # A display-style name that appears in no source file would silently hide
     # every real usage, so shout when the filter can never match.
@@ -117,6 +118,15 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
                   f"max_call_sites={max_call_sites}; too broad to patch automatically, "
                   f"review manually: {change.title} ({change.url})")
             continue
+        site_key = frozenset((s.file, s.line) for s in sites)
+        if site_key in proposed_sites:
+            # Vendors often split one removal across entries (e.g. the same
+            # parameter on Checkout Sessions and on Payment Intents); a second
+            # PR editing the same lines would only conflict with the first.
+            print(f"[apiwatch] {name} {change.version}: same call sites as "
+                  f"'{proposed_sites[site_key]}'; covered by that patch: {change.title}")
+            continue
+        proposed_sites[site_key] = change.title
         per_version[change.version] = per_version.get(change.version, 0) + 1
         branch = f"apiwatch/{name}-{change.version}-{per_version[change.version]}"
         if dry_run:

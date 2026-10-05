@@ -38,6 +38,14 @@ _REST_SECTION_RE = re.compile(r"^####\s+REST API\s*$(.*?)(?=^#{2,4}\s|\Z)", re.M
 _CELLS_RE = re.compile(r"^\|(.*?)\|(.*?)\|")
 _BACKTICKED_RE = re.compile(r"`([^`]+)`")
 _LINK_TEXT_RE = re.compile(r"\[([^\]]+)\]")
+# One-word field names so common that matching them is noise, not evidence
+# (`reason=`, `.created`, `["name"]` appear in any codebase). A change whose
+# fields are all generic is left for manual review.
+_GENERIC_FIELDS = {
+    "id", "object", "type", "status", "name", "reason", "created", "updated",
+    "errors", "error", "data", "amount", "currency", "description", "metadata",
+    "url", "email", "value", "mode", "state", "source", "details", "transition",
+}
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -77,8 +85,10 @@ def detail_symbols(body: str) -> tuple[str, ...]:
     seen: list[str] = []
     for fields, _ in _breaking_rows(body):
         for field in fields:
+            if "." in field and not field[:1].isupper():
+                continue  # an event type (`account.updated`), not Resource.field
             name = field.split(".")[-1]
-            if _IDENT_RE.match(name) and name not in seen:
+            if _IDENT_RE.match(name) and name.lower() not in _GENERIC_FIELDS and name not in seen:
                 seen.append(name)
     return tuple(seen)
 

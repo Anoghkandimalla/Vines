@@ -191,3 +191,12 @@ def test_detail_resources_from_breaking_rows():
             "| `coupon` | Removed | [PromotionCode](/x), [PromotionCode#create](/y) |\n"
             "| `tax_ids` | Removed | [Checkout.Session.collected_information](/z) |\n")
     assert detail_resources(body) == ("PromotionCode", "Session")
+
+
+def test_detail_symbols_skip_event_types_and_generic_fields():
+    from apiwatch.watcher.stripe import detail_symbols
+
+    body = ("#### REST API\n\n| Parameters | Change | Resources |\n| --- | --- | --- |\n"
+            "| `account.updated`, `Account.requirements.errors` | Changed | [Account](/x) |\n"
+            "| `reason`, `disabled_reason` | Changed | [Account](/x) |\n")
+    assert detail_symbols(body) == ("disabled_reason",)
