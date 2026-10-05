@@ -69,8 +69,17 @@ def open_draft_pr(
              "--title", title, "--body", body],
             cwd=repo_root,
             check=True,
+            capture_output=True,
+            text=True,
         )
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as exc:
+        # The command line carries the whole PR body; surface gh's own reason
+        # (e.g. Actions not permitted to create PRs) instead of burying it.
+        reason = (exc.stderr or exc.stdout or "").strip() or f"exit status {exc.returncode}"
+        print(f"[apiwatch] ERROR: could not open draft PR for {branch}: {reason}")
+        if "not permitted to create" in reason:
+            print("[apiwatch] hint: enable Settings -> Actions -> General -> Workflow permissions -> "
+                  "'Allow GitHub Actions to create and approve pull requests'")
         # A pushed branch without its PR would make later runs skip this
         # change as "awaiting review" forever, so take the branch back down.
         subprocess.run(["git", "-C", str(repo_root), "push", "-q", "origin", "--delete", branch],
