@@ -15,10 +15,34 @@ Watches the third-party APIs your codebase depends on, detects breaking changes 
 Two files and one secret — no hosting, no app registration, no database:
 
 1. Copy `examples/apiwatch.yml` to the root of the repo you want watched and adjust it.
-2. Copy `examples/apiwatch-workflow.yml` to `.github/workflows/apiwatch.yml`.
-3. Add an `ANTHROPIC_API_KEY` secret to the repo (used by the patch agent).
+2. Add the workflow, `.github/workflows/apiwatch.yml` (also in `examples/apiwatch-workflow.yml`):
 
-The workflow runs daily and on manual dispatch. `GITHUB_TOKEN` (provided automatically) is used to push the patch branch and open the draft PR.
+   ```yaml
+   name: apiwatch
+   on:
+     schedule:
+       - cron: "17 6 * * *"
+     workflow_dispatch: {}
+   permissions:
+     contents: write
+     pull-requests: write
+   jobs:
+     apiwatch:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+           with:
+             fetch-depth: 0
+         - uses: Anoghkandimalla/Vines@v0.2.0
+           with:
+             anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+   ```
+3. Add an `ANTHROPIC_API_KEY` repository secret (used by the patch agent).
+4. In Settings → Actions → General → Workflow permissions, choose **Read and write permissions** and tick **Allow GitHub Actions to create and approve pull requests**.
+
+The workflow runs daily and on manual dispatch. `GITHUB_TOKEN` (provided automatically) pushes the patch branch, opens the draft PR and records apiwatch's progress (`.apiwatch/state.json`) on the base branch.
+
+**Verifying patches with your tests.** Set `test_command` in `apiwatch.yml` (e.g. `pip install -e ".[test]" && pytest -q`). apiwatch runs it once on the unpatched code, then after each patch. If the patch breaks a suite that passed before, the agent gets one retry with the failure output. The result goes in the PR body: passing, still failing (with the output), or "already failing before the patch". A failing patch is still proposed, clearly flagged, rather than silently dropped.
 
 ## Run locally
 
@@ -51,6 +75,7 @@ python -m pytest   # unit + e2e tests (agent faked, git origin local, gh stubbed
 
 - **Never merges.** Only draft PRs, enforced by tests (no merge code exists).
 - **Changelog text is untrusted input.** It is fetched from the vendor and embedded in the agent's prompt, so a compromised or spoofed changelog could try to steer the agent. As defense in depth, apiwatch discards any patch that touches files outside the call sites the mapper identified, plus the JSON/YAML test fixtures under those files' directories that carry a changed symbol (at most 20, so the agent can keep recorded payloads consistent with the patch), and commits only those files (plus the state file) — an agent lured off-task cannot land edits elsewhere in the tree. The draft-PR human review is the final backstop.
+- **Tests run agent-written code, so they run without credentials.** The file allowlist is enforced before any test runs. The test command runs with secret-looking variables (`*TOKEN*`, `*SECRET*`, `*API_KEY*`, …) removed from its environment, and the GitHub token that `actions/checkout` stores in the git config is unset for the duration. This narrows, but cannot fully close, what a patch steered by a malicious changelog could do while its tests run; keep the job's permissions to the two listed above.
 - **First run proposes nothing.** With no recorded watermark, apiwatch seeds `.apiwatch/state.json` at the newest changelog version instead of opening PRs for every historical breaking change.
 - **Open PRs are not re-proposed.** If the patch branch already exists on origin, the change is skipped until the PR is merged or closed.
 

@@ -1,0 +1,41 @@
+name: apiwatch
+description: Watches third-party API changelogs and opens draft PRs patching your code for breaking changes. Never merges.
+branding:
+  icon: git-pull-request
+  color: orange
+
+inputs:
+  anthropic-api-key:
+    description: Anthropic API key for the patch agent (pass a secret).
+    required: true
+  config:
+    description: Path to apiwatch.yml, relative to the repo root.
+    default: apiwatch.yml
+  github-token:
+    description: Token used to push patch branches and open draft PRs.
+    default: ${{ github.token }}
+  python-version:
+    description: Python used to run apiwatch.
+    default: "3.11"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Install apiwatch
+      shell: bash
+      # The action's own checkout, so the version matches the pinned tag.
+      run: pip install "$GITHUB_ACTION_PATH"
+    - name: Install Claude Code (patch agent)
+      shell: bash
+      run: npm install -g @anthropic-ai/claude-code
+    - name: Run apiwatch
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        APIWATCH_CONFIG: ${{ inputs.config }}
+      # --commit-state persists the changelog watermark between runs.
+      run: apiwatch run --repo . --config "$APIWATCH_CONFIG" --commit-state
