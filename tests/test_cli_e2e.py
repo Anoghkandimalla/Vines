@@ -324,3 +324,68 @@ def test_changes_with_identical_call_sites_get_one_patch(tmp_path):
         {"stripe": {"last_version": "2022-08-01"}},
     )
     assert run(repo, repo / "apiwatch.yml", dry_run=True) == 1
+
+
+def _with_test_command(repo, command):
+    cfg = repo / "apiwatch.yml"
+    cfg.write_text(cfg.read_text() + f"test_command: {command!r}\n")
+    g = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(g + ["commit", "-q", "-am", "tests"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
+
+
+def test_passing_tests_are_reported_in_pr(target):
+    repo, origin, gh, gh_log = target
+    _with_test_command(repo, "python3 -m py_compile app.py")
+    assert run(repo, repo / "apiwatch.yml", runner=_fake_runner, gh_cmd=str(gh)) == 1
+    assert "passes with this patch" in gh_log.read_text()
+
+
+def test_failing_patch_gets_one_retry_with_test_output(target):
+    repo, origin, gh, gh_log = target
+    _with_test_command(repo, "! grep -q BROKEN app.py || (echo 'BROKEN found'; exit 1)")
+    prompts = []
+
+    def runner(repo_root, prompt):
+        prompts.append(prompt)
+        app = repo_root / "app.py"
+        if len(prompts) == 1:  # a first attempt that breaks the suite
+            app.write_text(app.read_text().replace("pi.charges.data[0]", "BROKEN"))
+        else:
+            app.write_text(app.read_text().replace("BROKEN", "pi.latest_charge"))
+
+    assert run(repo, repo / "apiwatch.yml", runner=runner, gh_cmd=str(gh)) == 1
+    assert len(prompts) == 2 and "BROKEN found" in prompts[1]
+    assert "passes with this patch (after one retry" in gh_log.read_text()
+
+
+def test_still_failing_patch_is_flagged_not_hidden(target):
+    repo, origin, gh, gh_log = target
+    _with_test_command(repo, "grep -q 'never_there' app.py")
+    # baseline must pass for a failure to be blamed on the patch
+    (repo / "app.py").write_text((repo / "app.py").read_text() + "# never_there\n")
+    g = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(g + ["commit", "-q", "-am", "marker"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
+
+    def runner(repo_root, prompt):
+        app = repo_root / "app.py"
+        app.write_text(app.read_text().replace("# never_there\n", "").replace(
+            "pi.charges.data[0]", "pi.latest_charge"))
+
+    assert run(repo, repo / "apiwatch.yml", runner=runner, gh_cmd=str(gh)) == 1
+    assert "**fails** with this patch" in gh_log.read_text()
+
+
+def test_already_failing_suite_is_not_blamed_on_patch(target):
+    repo, origin, gh, gh_log = target
+    _with_test_command(repo, "exit 1")
+    calls = []
+
+    def runner(repo_root, prompt):
+        calls.append(prompt)
+        _fake_runner(repo_root, prompt)
+
+    assert run(repo, repo / "apiwatch.yml", runner=runner, gh_cmd=str(gh)) == 1
+    assert len(calls) == 1  # no retry: the failure predates the patch
+    assert "already failing before this patch" in gh_log.read_text()

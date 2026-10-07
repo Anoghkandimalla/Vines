@@ -7,3 +7,7 @@ apis:
     # format: twilio   # defaults to the api name; set it when `name` differs
 state_file: .apiwatch/state.json
 base_branch: main
+# Optional: verify each patch with your test suite before the PR opens.
+# Runs on the CI runner with secrets removed from its environment.
+# test_command: pip install -e ".[test]" && pytest -q
+# test_timeout: 1200   # seconds
