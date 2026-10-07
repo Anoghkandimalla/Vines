@@ -58,3 +58,20 @@ Rules:
 - Do not create, delete, or move files.
 - Preserve existing behavior for everything the breaking change does not affect.
 """
+
+
+def build_retry_prompt(change: ChangeEntry, sites: list[CallSite], fixtures: Sequence[str],
+                       test_command: str, output_tail: str) -> str:
+    """Second attempt: the first patch broke the repo's tests, which passed before it."""
+    return build_prompt(change, sites, fixtures) + f"""
+## Your previous patch fails the test suite
+
+The edits you already made are still in place. With them, `{test_command}`
+fails; it passed before your patch. Fix the patch so the tests pass, keeping
+it a correct migration to the new API version. Do not weaken or delete tests
+to make them pass. The end of the test output:
+
+```
+{output_tail}
+```
+"""

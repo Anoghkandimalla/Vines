@@ -35,6 +35,7 @@ def open_draft_pr(
     paths: list[str] | None = None,
     extra_paths: list[str] | None = None,
     gh_cmd: str = "gh",
+    notes: str = "",
 ) -> None:
     repo_root = Path(repo_root)
     _git(repo_root, "checkout", "-b", branch)
@@ -52,6 +53,7 @@ def open_draft_pr(
         f"(version `{change.version}`).\n\n"
         f"**What changed upstream:** {change.description}\n\n"
         f"**Changelog:** {change.url}\n\n"
+        + (f"{notes}\n\n" if notes else "") +
         "This PR was opened as a draft by apiwatch and is **never auto-merged** — "
         "please review the patch before accepting it.\n"
     )

@@ -9,6 +9,8 @@ DEFAULTS = {
     "max_call_sites": 100,
     "require_api_mention": True,
     "include_preview": False,
+    "test_command": None,
+    "test_timeout": 1200,
 }
 
 

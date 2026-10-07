@@ -8,7 +8,8 @@ from apiwatch.config import load_config
 from apiwatch.mapper import related_fixtures, repo_mentions, scan_repo
 from apiwatch.patcher.agent import run_agent
 from apiwatch.patcher.pr import open_draft_pr
-from apiwatch.patcher.prompt import build_prompt
+from apiwatch.patcher.prompt import build_prompt, build_retry_prompt
+from apiwatch.patcher.verify import TestResult, run_tests
 from apiwatch.state import load_state, save_state
 from apiwatch.watcher import get_format
 from apiwatch.watcher.core import load_source, new_breaking_changes
@@ -45,8 +46,35 @@ def _restore_tree(repo: Path, state_file: str) -> None:
     )
 
 
+def _test_note(command: str, baseline: TestResult, result: TestResult, retried: bool) -> str:
+    """PR-body summary of what the repo's own tests said about the patch."""
+    if not baseline.passed:
+        return (f"**Tests:** `{command}` was already failing before this patch, so it could not "
+                "verify it.")
+    if result.passed:
+        again = " (after one retry with the test failure)" if retried else ""
+        return f"**Tests:** ✅ `{command}` passes with this patch{again}."
+    return (f"**Tests:** ⚠️ `{command}` **fails** with this patch (it passed before), even after "
+            f"one retry. Review carefully. End of the test output:\n\n```\n{result.output_tail}\n```")
+
+
+def _tests(repo: Path, cfg: dict) -> TestResult:
+    """Run the test command, then drop untracked files it left (caches,
+    coverage reports) so they aren't mistaken for agent edits. Tracked
+    edits, i.e. the patch, are untouched."""
+    result = run_tests(repo, cfg["test_command"], cfg["test_timeout"])
+    subprocess.run(["git", "-C", str(repo), "clean", "-fdq", "-e", cfg["state_file"].split("/")[0]],
+                   check=True)
+    return result
+
+
+def _outside(repo: Path, state_file: str, allowed: list[str]) -> list[str]:
+    return sorted(set(_changed_files(repo, state_file)) - set(allowed))
+
+
 def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
-             dry_run: bool, runner, gh_cmd: str, max_call_sites: int) -> int:
+             dry_run: bool, runner, gh_cmd: str, max_call_sites: int,
+             baseline_cache: dict | None = None) -> int:
     name = api["name"]
     source = str(api["changelog"])
     state_file = cfg["state_file"]
@@ -145,22 +173,48 @@ def _run_api(repo: Path, cfg: dict, api: dict, state: dict, state_path: Path,
             # Sites and allowlist stay as mapped above.
             if enrich_change is not None and not enriched:
                 change = enrich_change(change)
+            test_cmd = cfg["test_command"]
+            if test_cmd and baseline_cache is not None and "baseline" not in baseline_cache:
+                # Once per run, on the clean base: was the suite green before
+                # any patch? Otherwise a failure says nothing about the patch.
+                print(f"[apiwatch] running baseline tests: {test_cmd}")
+                baseline_cache["baseline"] = _tests(repo, cfg)
             run_agent(repo, build_prompt(change, sites, fixtures), runner=runner)
-            touched = _changed_files(repo, state_file)
-            if not touched:
+            if not _changed_files(repo, state_file):
                 print(f"[apiwatch] agent produced no changes for {name} {change.version}; skipping PR")
                 continue
-            outside = sorted(set(touched) - set(allowed))
+            # Checked before any test runs: agent edits outside the affected
+            # files are never executed, let alone proposed.
+            outside = _outside(repo, state_file, allowed)
             if outside:
                 # The prompt asks the agent to stay inside the affected files;
                 # this makes that a hard policy rather than a request.
                 print(f"[apiwatch] WARNING: {name} {change.version}: agent touched files outside "
                       f"the affected set ({', '.join(outside)}); discarding patch")
                 continue
+            notes = ""
+            if test_cmd:
+                baseline = (baseline_cache or {}).get("baseline") or TestResult(True, "")
+                result, retried = _tests(repo, cfg), False
+                if not result.passed and baseline.passed:
+                    print(f"[apiwatch] {name} {change.version}: tests fail with the patch; "
+                          "retrying the agent once with the failure output")
+                    run_agent(repo, build_retry_prompt(change, sites, fixtures, test_cmd,
+                                                       result.output_tail), runner=runner)
+                    retried = True
+                    outside = _outside(repo, state_file, allowed)
+                    if outside or not _changed_files(repo, state_file):
+                        print(f"[apiwatch] WARNING: {name} {change.version}: retry left no usable "
+                              "patch inside the affected files; discarding")
+                        continue
+                    result = _tests(repo, cfg)
+                print(f"[apiwatch] {name} {change.version}: tests "
+                      f"{'pass' if result.passed else 'FAIL'} with the patch")
+                notes = _test_note(test_cmd, baseline, result, retried)
             state[name] = {"last_version": newest}
             save_state(state_path, state)
             open_draft_pr(repo, change, branch=branch, base=cfg["base_branch"],
-                          paths=allowed, extra_paths=[state_file], gh_cmd=gh_cmd)
+                          paths=allowed, extra_paths=[state_file], gh_cmd=gh_cmd, notes=notes)
             proposed += 1
         finally:
             subprocess.run(["git", "-C", str(repo), "checkout", "-q", cfg["base_branch"]], check=False)
@@ -202,10 +256,11 @@ def run(repo: Path, config_path: Path, dry_run: bool = False, runner=None, gh_cm
     state = load_state(state_path)
     proposed = 0
     failed = []
+    baseline_cache: dict = {}
     for api in cfg["apis"]:
         try:
             proposed += _run_api(repo, cfg, api, state, state_path, dry_run, runner, gh_cmd,
-                                 max_call_sites)
+                                 max_call_sites, baseline_cache)
         except Exception as exc:
             failed.append(api["name"])
             print(f"[apiwatch] ERROR: {api['name']}: {exc}")
